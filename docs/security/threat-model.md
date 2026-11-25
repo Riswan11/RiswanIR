@@ -57,3 +57,14 @@ The risk column estimates exposure before the stated controls. Residual risk ref
 | SF-17 | I, E, D · AWS authentication, connector scope and checkpoints | Misconfigured IAM trust, credential exposure, inappropriate bucket access, or repeated collection increases exposure or cost. | Medium / High / High | Temporary SDK credentials, account and source checks, scoped assumed-session policy, verified TLS, bounded requests and object sizes, deduplication, and redacted health summaries. | Verify each role and archive in a dedicated sandbox. Monitor usage, configure external ID where appropriate, keep direct profiles narrowly scoped, and protect raw evidence. | Medium. IAM trust and direct profile privileges are operated outside the app, and local privileged access can expose raw telemetry. |
 
 Use the [risk register](risk-register.md) for owners and review triggers, and the [controls inventory](security-controls.md) for verification evidence.
+
+## Detection configuration and replay
+
+| STRIDE | Scenario | Likelihood | Impact | Risk | Existing mitigation | Residual risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tampering | A local writer alters YAML, inventory, or an exception to hide findings. | Medium | High | High | Trusted filesystem paths, schema validation, bounded versioned YAML, archived exact policy and fingerprint, scoped and expiring exceptions. | Medium. A workstation administrator can alter configuration and local storage. |
+| Spoofing | A forged CloudTrail export claims a known principal or expected source network. | Medium | High | High | Inventory uses trusted local configuration, missing attributes fail predicates, and reports retain supporting evidence. | High. Imported claims remain subject to the evidence source-authenticity limitation. |
+| Repudiation | An operator disputes who approved a suppression or exception. | Medium | Medium | Medium | Suppression decisions record rule, version and evidence. Exceptions also record their local approval ID and archived approver. | Medium. Workstation operators attest their own identity. |
+| Information disclosure | Another local user reads account inventory or approved network ranges from the case database. | Medium | Medium | Medium | Inventory stays out of API responses and execution logs. SQLite relies on restricted filesystem access. | Medium. Elevated local readers retain access. |
+| Denial of service | Large rules or high-fanout telemetry exhaust detection memory. | Medium | Medium | Medium | YAML, rule, event, grouping-window and result bounds. Excess results fail the case transaction. | Low to medium. Per-case limits do not rate-limit repeated local submissions. |
+| Elevation of privilege | A rule tries to access arbitrary objects or execute code. | Low | High | Medium | Safe YAML loader and fixed field and operator allowlists. Findings are advisory. | Low. Dependencies and future operators require review. |

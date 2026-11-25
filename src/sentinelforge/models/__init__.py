@@ -15,6 +15,7 @@ from ..ingestion.exports import export_records
 from .base import DomainModel, Text, Timestamp
 from .canonical_event import SecurityEvent as CanonicalEvent
 from .correlation import CorrelationConfidence, CorrelationResult
+from .detection import DetectionReplayResult
 from .evidence import Evidence as Evidence
 from .provenance import CollectionContext
 from .security_event import NormalizedEvent as NormalizedEvent
@@ -159,6 +160,7 @@ class InvestigationResult(DomainModel):
     action: AdvisoryAction | None
     correlation: CorrelationResult | None = None
     canonical_events: list[CanonicalEvent] | None = None
+    detection: DetectionReplayResult | None = None
 
     @model_validator(mode="after")
     def validate_references(self) -> Self:
@@ -168,6 +170,11 @@ class InvestigationResult(DomainModel):
         references = {
             reference for finding in self.assessment.claims for reference in finding.evidence_ids
         }
+        if self.detection:
+            references.update(
+                item for finding in self.detection.findings for item in finding.evidence_ids
+            )
+            references.update(decision.evidence_id for decision in self.detection.decisions)
         if self.action:
             references.update(self.action.evidence_ids)
         if self.correlation:

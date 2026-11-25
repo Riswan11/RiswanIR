@@ -1,0 +1,232 @@
+- id: "SF-AWS-IAM-001"
+  name: "Suspicious cross-account role assumption"
+  version: "1.0.0"
+  enabled: true
+  description: "Suspicious cross-account role assumption recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["sts.amazonaws.com","sts.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["AssumeRole","AssumeRoleWithSAML","AssumeRoleWithWebIdentity"]},{"field":"context.cross_account","operator":"equals","value":true},{"field":"context.role_privileged","operator":"equals","value":true},{"field":"context.environment","operator":"equals","value":"production"}]
+  any_conditions: [{"field":"context.unseen_relationship","operator":"equals","value":true},{"field":"context.unexpected_network","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["privilege-escalation"],"techniques":["T1078.004"]}
+  recommendation: "Review the evidence and validate the business justification for suspicious cross-account role assumption."
+
+- id: "SF-AWS-IAM-002"
+  name: "Unexpected access key creation"
+  version: "1.0.0"
+  enabled: true
+  description: "Unexpected access key creation recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["iam.amazonaws.com","iam.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["CreateAccessKey"]},{"field":"context.environment","operator":"equals","value":"production"},{"field":"context.unexpected_network","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["persistence"],"techniques":["T1098.001"]}
+  recommendation: "Review the evidence and validate the business justification for unexpected access key creation."
+
+- id: "SF-AWS-IAM-003"
+  name: "Root account usage"
+  version: "1.0.0"
+  enabled: true
+  description: "Root account usage recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"actor.kind","operator":"equals","value":"Root"}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","cloud.account"]}
+  recommendation: "Review the evidence and validate the business justification for root account usage."
+
+- id: "SF-AWS-IAM-004"
+  name: "Unusual privileged session activity"
+  version: "1.0.0"
+  enabled: true
+  description: "Unusual privileged session activity recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"context.role_privileged","operator":"equals","value":true},{"field":"context.environment","operator":"equals","value":"production"},{"field":"context.unexpected_network","operator":"equals","value":true},{"field":"actor.mfa","operator":"equals","value":false},{"field":"actor.session_issuer","operator":"exists","value":null}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","cloud.account"]}
+  mitre: {"tactics":["privilege-escalation"],"techniques":["T1078.004"]}
+  recommendation: "Review the evidence and validate the business justification for unusual privileged session activity."
+
+- id: "SF-AWS-PRIV-001"
+  name: "Administrator policy attachment"
+  version: "1.0.0"
+  enabled: true
+  description: "Administrator policy attachment recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["iam.amazonaws.com","iam.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["AttachRolePolicy","AttachGroupPolicy","AttachUserPolicy"]},{"field":"context.admin_policy","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["privilege-escalation"],"techniques":["T1098.003"]}
+  recommendation: "Review the evidence and validate the business justification for administrator policy attachment."
+
+- id: "SF-AWS-PRIV-002"
+  name: "Sensitive IAM policy modification"
+  version: "1.0.0"
+  enabled: true
+  description: "Sensitive IAM policy modification recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["iam.amazonaws.com","iam.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["CreatePolicyVersion","SetDefaultPolicyVersion","PutUserPolicy","PutRolePolicy","PutGroupPolicy"]},{"field":"resource.criticality","operator":"in","value":["sensitive","critical"]},{"field":"context.environment","operator":"equals","value":"production"}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for sensitive IAM policy modification."
+
+- id: "SF-AWS-PRIV-003"
+  name: "Sensitive role trust policy modification"
+  version: "1.0.0"
+  enabled: true
+  description: "Sensitive role trust policy modification recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["iam.amazonaws.com","iam.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["UpdateAssumeRolePolicy"]},{"field":"resource.criticality","operator":"in","value":["sensitive","critical"]},{"field":"context.environment","operator":"equals","value":"production"}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for sensitive role trust policy modification."
+
+- id: "SF-AWS-PRIV-004"
+  name: "Permissions boundary removal"
+  version: "1.0.0"
+  enabled: true
+  description: "Permissions boundary removal recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["iam.amazonaws.com","iam.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["DeleteRolePermissionsBoundary","DeleteUserPermissionsBoundary"]},{"field":"context.environment","operator":"equals","value":"production"}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for permissions boundary removal."
+
+- id: "SF-AWS-DEF-001"
+  name: "CloudTrail logging stopped"
+  version: "1.0.0"
+  enabled: true
+  description: "CloudTrail logging stopped recorded in successful AWS activity."
+  severity: "critical"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["cloudtrail.amazonaws.com","cloudtrail.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["StopLogging"]}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["defense-evasion"],"techniques":["T1562.008"]}
+  recommendation: "Review the evidence and validate the business justification for cloudTrail logging stopped."
+
+- id: "SF-AWS-DEF-002"
+  name: "CloudTrail trail deleted"
+  version: "1.0.0"
+  enabled: true
+  description: "CloudTrail trail deleted recorded in successful AWS activity."
+  severity: "critical"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["cloudtrail.amazonaws.com","cloudtrail.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["DeleteTrail"]}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["defense-evasion"],"techniques":["T1562.008"]}
+  recommendation: "Review the evidence and validate the business justification for cloudTrail trail deleted."
+
+- id: "SF-AWS-DEF-003"
+  name: "GuardDuty monitoring disabled"
+  version: "1.0.0"
+  enabled: true
+  description: "GuardDuty monitoring disabled recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["guardduty.amazonaws.com","guardduty.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["DeleteDetector","StopMonitoringMembers"]}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["defense-evasion"],"techniques":["T1562.001"]}
+  recommendation: "Review the evidence and validate the business justification for guardDuty monitoring disabled."
+
+- id: "SF-AWS-DEF-004"
+  name: "Production CloudTrail configuration changed"
+  version: "1.0.0"
+  enabled: true
+  description: "Production CloudTrail configuration changed recorded in successful AWS activity."
+  severity: "medium"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["cloudtrail.amazonaws.com","cloudtrail.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["UpdateTrail","PutEventSelectors","PutInsightSelectors"]},{"field":"context.environment","operator":"equals","value":"production"}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for production CloudTrail configuration changed."
+
+- id: "SF-AWS-DATA-001"
+  name: "Repeated S3 reads from an unexpected network"
+  version: "1.0.0"
+  enabled: true
+  description: "Repeated S3 reads from an unexpected network recorded in successful AWS activity."
+  severity: "medium"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["s3.amazonaws.com","s3.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["GetObject"]},{"field":"context.unexpected_network","operator":"equals","value":true}]
+  threshold: {"minimum":3,"window_minutes":15,"fields":["actor.uid","resource.uid"]}
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["collection"],"techniques":["T1530"]}
+  recommendation: "Review the evidence and validate the business justification for repeated S3 reads from an unexpected network."
+
+- id: "SF-AWS-DATA-002"
+  name: "Sensitive S3 object access"
+  version: "1.0.0"
+  enabled: true
+  description: "Sensitive S3 object access recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["s3.amazonaws.com","s3.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["GetObject","SelectObjectContent"]},{"field":"resource.criticality","operator":"in","value":["sensitive","critical"]},{"field":"context.unexpected_network","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["collection"],"techniques":["T1530"]}
+  recommendation: "Review the evidence and validate the business justification for sensitive S3 object access."
+
+- id: "SF-AWS-DATA-003"
+  name: "Public S3 bucket policy grant"
+  version: "1.0.0"
+  enabled: true
+  description: "Public S3 bucket policy grant recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["s3.amazonaws.com","s3.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["PutBucketPolicy"]},{"field":"context.public_policy","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for public S3 bucket policy grant."
+
+- id: "SF-AWS-DATA-004"
+  name: "Production encryption configuration changed"
+  version: "1.0.0"
+  enabled: true
+  description: "Production encryption configuration changed recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["s3.amazonaws.com","s3.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["DeleteBucketEncryption","PutBucketEncryption"]},{"field":"context.environment","operator":"equals","value":"production"},{"field":"resource.criticality","operator":"in","value":["sensitive","critical"]}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for production encryption configuration changed."
+
+- id: "SF-AWS-INFRA-001"
+  name: "Unrestricted security group ingress"
+  version: "1.0.0"
+  enabled: true
+  description: "Unrestricted security group ingress recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["ec2.amazonaws.com","ec2.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["AuthorizeSecurityGroupIngress","ModifySecurityGroupRules"]},{"field":"context.unrestricted_ingress","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for unrestricted security group ingress."
+
+- id: "SF-AWS-INFRA-002"
+  name: "Production instance creation from an unexpected network"
+  version: "1.0.0"
+  enabled: true
+  description: "Production instance creation from an unexpected network recorded in successful AWS activity."
+  severity: "medium"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["ec2.amazonaws.com","ec2.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["RunInstances"]},{"field":"context.environment","operator":"equals","value":"production"},{"field":"context.unexpected_network","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["defense-evasion"],"techniques":["T1578.002"]}
+  recommendation: "Review the evidence and validate the business justification for production instance creation from an unexpected network."
+
+- id: "SF-AWS-INFRA-003"
+  name: "Sensitive security group modification"
+  version: "1.0.0"
+  enabled: true
+  description: "Sensitive security group modification recorded in successful AWS activity."
+  severity: "medium"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["ec2.amazonaws.com","ec2.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["RevokeSecurityGroupIngress","AuthorizeSecurityGroupEgress","RevokeSecurityGroupEgress","ModifySecurityGroupRules"]},{"field":"resource.criticality","operator":"in","value":["sensitive","critical"]},{"field":"context.environment","operator":"equals","value":"production"}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  recommendation: "Review the evidence and validate the business justification for sensitive security group modification."
+
+- id: "SF-AWS-INFRA-004"
+  name: "Snapshot shared publicly or with another account"
+  version: "1.0.0"
+  enabled: true
+  description: "Snapshot shared publicly or with another account recorded in successful AWS activity."
+  severity: "high"
+  provider: "AWS"
+  conditions: [{"field":"activity.service","operator":"in","value":["ec2.amazonaws.com","ec2.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["ModifySnapshotAttribute"]},{"field":"context.external_snapshot","operator":"equals","value":true}]
+  suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
+  mitre: {"tactics":["collection"],"techniques":["T1530"]}
+  recommendation: "Review the evidence and validate the business justification for snapshot shared publicly or with another account."

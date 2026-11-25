@@ -158,6 +158,9 @@ def record_transformations(
             if result.correlation
             else None,
             "canonical_digest": canonical_digest(result.canonical_events),
+            "detection_digest": sha256(canonical_json(result.detection.payload()))
+            if result.detection
+            else None,
         },
     )
 
@@ -290,6 +293,9 @@ def verify(
             problems.append("Correlation snapshot verification failed.")
         if history[1].details.get("canonical_digest") != canonical_digest(report.canonical_events):
             problems.append("Canonical event snapshot verification failed.")
+        detection = sha256(canonical_json(report.detection.payload())) if report.detection else None
+        if history[1].details.get("detection_digest") != detection:
+            problems.append("Detection snapshot verification failed.")
         for anchor, name, items in (
             (history[0], "receipts_digest", origins),
             (history[1], "transformations_digest", versions),

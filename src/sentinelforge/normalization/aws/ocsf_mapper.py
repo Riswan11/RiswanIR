@@ -28,6 +28,7 @@ from ...schema.registry import (
     OCSF_VERSION,
     SchemaRegistry,
 )
+from .detection_signals import DetectionSignals
 
 SOURCE = "aws.cloudtrail"
 MAPPING_VERSION = "1.0.0"
@@ -66,6 +67,8 @@ class CloudTrailExtension(CanonicalModel):
     session_issuer_arn: str | None = None
     source_identity: str | None = None
     fallback_reason: str | None = None
+    identity_type: str | None = None
+    detection_signals: DetectionSignals | None = None
 
 
 REGISTRY = SchemaRegistry()
@@ -145,6 +148,7 @@ def map_event(
     *,
     evidence: EvidenceReference | None = None,
     parent: str | None = None,
+    detection_signals: DetectionSignals | None = None,
 ) -> SecurityEvent:
     operation = event.operation or event.event
     actor = actor_from(event)
@@ -175,6 +179,8 @@ def map_event(
         else None,
         source_identity=identity_session.source_identity if identity_session else None,
         fallback_reason=fallback,
+        identity_type=event.identity.type if event.identity else None,
+        detection_signals=detection_signals,
     )
     resources = [
         Resource(uid=item.arn, type=item.type, account_uid=item.account_id)
