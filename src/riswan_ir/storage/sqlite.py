@@ -7,10 +7,11 @@ import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
+from riswan_platform.core.context import require_context
 from riswan_security_data.provenance import EvidenceProvenance
 
 from ..core.config import setting
@@ -64,6 +65,13 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS investigations (
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, report TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS investigation_ownership (
+    investigation_id TEXT PRIMARY KEY REFERENCES investigations(id),
+    tenant_id TEXT NOT NULL,
+    creator_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS investigation_ownership_tenant
+ON investigation_ownership(tenant_id, investigation_id);
 CREATE TABLE IF NOT EXISTS detection_configuration (
     investigation_id TEXT PRIMARY KEY REFERENCES investigations(id),
     context TEXT NOT NULL, rules TEXT NOT NULL
@@ -98,8 +106,10 @@ class Store:
         *,
         detection_context: DetectionContext | None = None,
         detection_registry: RuleRegistry | None = None,
+        hosted: bool = False,
     ):
         self.path = path
+        self.hosted = hosted
         policy = setting("DETECTION_CONTEXT")
         registry = setting("DETECTION_RULES")
         if detection_context is None and policy:
@@ -139,7 +149,7 @@ class Store:
     def create(self, request: InvestigationRequest) -> InvestigationReport:
         with self.connect() as db:
             case_id = self.create_in_transaction(db, request)
-        return self.get(case_id)
+        return self.get(case_id, related_ids=() if self.hosted else None)
 
     def create_in_transaction(
         self,
@@ -154,6 +164,12 @@ class Store:
         )
         case_id, timestamp = uuid4().hex, now()
         db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
+        if self.hosted:
+            context = require_context()
+            db.execute(
+                "INSERT INTO investigation_ownership VALUES (?, ?, ?)",
+                (case_id, str(context.tenant_id), str(UUID(context.actor_id))),
+            )
         origins = evidence_store.ingest(db, case_id, request, timestamp, inherited)
         rules = self.detection_registry.select()
         result = analyze(request, rules=rules, context=self.detection_context)
@@ -208,7 +224,11 @@ class Store:
         profile = index_memory(
             db, report, graph, result_, self.detection_context, config, timestamp
         )
-        historical = retrieve_memory(db, profile, config, timestamp, timestamp, log=False)
+        historical = (
+            None
+            if self.hosted
+            else retrieve_memory(db, profile, config, timestamp, timestamp, log=False)
+        )
         score_case(
             db,
             report,
@@ -317,7 +337,7 @@ class Store:
                 log=False,
                 authorization=live,
             )
-            if profile and config
+            if profile and config and not self.hosted
             else None
         )
         return score_case(
@@ -526,7 +546,7 @@ class Store:
                 provenance=supplement.provenance,
             )
             revised = self.create_in_transaction(db, request, previous=case_id, inherited=origins)
-        return self.get(revised)
+        return self.get(revised, related_ids=() if self.hosted else None)
 
     def verify_evidence(self, case_id: str) -> EvidenceIntegrity:
         with self.connect() as db:
@@ -674,6 +694,16 @@ class Store:
             accounts.update((actor, owner))
         return sorted(accounts)
 
+    def owned_investigations(self, tenant_id: UUID) -> dict[str, UUID]:
+        with self.connect() as db:
+            return {
+                row[0]: UUID(row[1])
+                for row in db.execute(
+                    "SELECT investigation_id, creator_id FROM investigation_ownership WHERE tenant_id = ?",
+                    (str(tenant_id),),
+                )
+            }
+
     def list_scoped(self, ids: tuple[str, ...]) -> list[InvestigationSummary]:
         with self.connect() as db:
             rows = db.execute(
@@ -710,7 +740,7 @@ class Store:
         return InvestigationSummary.model_validate_json(row["report"])
 
     def feedback(self, investigation_id: str, feedback: AnalystFeedback) -> InvestigationReport:
-        self.get(investigation_id)
+        self.get_summary(investigation_id)
         review = AnalystReview(**dict(feedback), created_at=now())
         with self.connect() as db:
             db.execute(
@@ -735,12 +765,12 @@ class Store:
                         db, investigation_id, review.disposition, config, review.created_at
                     )
             self._score_existing_risk(db, investigation_id, review.created_at, "analyst_review")
-        return self.get(investigation_id)
+        return self.get(investigation_id, related_ids=() if self.hosted else None)
 
     def decide(
         self, investigation_id: str, action_id: str, decision: ActionDecision
     ) -> InvestigationReport:
-        action = self.get(investigation_id).action
+        action = self.get(investigation_id, related_ids=()).action
         if action is None or action.id != action_id:
             raise NotFoundError("Action not found.")
         with self.connect() as db:
@@ -758,4 +788,4 @@ class Store:
                         node.metadata["status"] = decision.decision.value
                         node.metadata["decision_at"] = decision.created_at
                 repository.save(graph)
-        return self.get(investigation_id)
+        return self.get(investigation_id, related_ids=() if self.hosted else None)

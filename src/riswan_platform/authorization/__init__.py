@@ -117,6 +117,7 @@ class Resource:
     parents: tuple[Scope, ...] = ()
     restricted: bool = False
     proposer_id: UUID | None = None
+    tenant_shared: bool = False
 
     @property
     def scopes(self) -> frozenset[Scope]:
@@ -299,7 +300,14 @@ class Evaluator:
             return "NO_PERMISSION"
         if resource.scope.kind in {ScopeType.INVESTIGATION, ScopeType.EVIDENCE, ScopeType.RESPONSE}:
             if not any(
-                g.scope.kind not in {ScopeType.PLATFORM, ScopeType.ORGANIZATION, ScopeType.PRODUCT}
+                (
+                    g.scope.kind
+                    not in {ScopeType.PLATFORM, ScopeType.ORGANIZATION, ScopeType.PRODUCT}
+                    or (
+                        resource.tenant_shared
+                        and g.scope == Scope(ScopeType.ORGANIZATION, str(context.tenant_id))
+                    )
+                )
                 and (not resource.restricted or g.scope == resource.scope)
                 for g in grants
             ):

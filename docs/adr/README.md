@@ -55,3 +55,5 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [Privilege Delegation and Separation of Duties](0041-separation-of-duties.md)
 - [Non-Human Identity Authorization](0042-workload-authorization.md)
 - [Authorization Auditing and Revocation](0043-authorization-audit-revocation.md)
+
+- [0044 Shared organization tenancy](0044-shared-organization-tenancy.md)

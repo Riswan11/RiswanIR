@@ -120,3 +120,7 @@ See [centralized authentication](docs/architecture/authentication.md) for OIDC c
 ## Authorization foundation
 
 [Authorization design, enforcement and revocation](docs/security/authorization.md)
+
+## Organizations and tenant access
+
+[Hosted tenant setup, organization APIs, and ownership](docs/architecture/organization-tenancy.md)

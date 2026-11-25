@@ -1,4 +1,4 @@
-"""Identity-only WSGI runtime. Authentication never assigns a tenant."""
+"""WSGI authentication and delegation to trusted application routes."""
 
 import json
 import re
@@ -65,9 +65,16 @@ class RequestBudget:
 
 
 class IdentityApplication:
-    def __init__(self, service: IdentityService, budget: RequestBudget | None = None):
+    def __init__(
+        self,
+        service: IdentityService,
+        budget: RequestBudget | None = None,
+        authenticated_routes: Callable[[dict, VerifiedPrincipal, str], tuple[int, object] | None]
+        | None = None,
+    ):
         self.service = service
         self.budget = budget or RequestBudget()
+        self._authenticated_routes = authenticated_routes
 
     def __call__(self, env, start_response):
         request_id = uuid4().hex
@@ -212,6 +219,10 @@ class IdentityApplication:
                 if identifier == principal.session_id:
                     headers.append(_cookie(SESSION, "", 0))
                 return 204, None
+        if self._authenticated_routes is not None:
+            result = self._authenticated_routes(env, principal, request_id)
+            if result is not None:
+                return result
         if path.startswith("/v1/investigations") or path.startswith("/v1/memory"):
             return 403, {"error": "Product access requires authorized tenant membership."}
         return 404, {"error": "Route not found."}

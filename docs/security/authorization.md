@@ -8,7 +8,7 @@ The scoped Riswan IR adapter checks collection scope before applying SQL limits.
 
 Case mutations check permissions inside the authorization lock and use the verified actor for analyst reviews and approval attribution. Store transactions preserve mutation atomicity. Duplicate approval protection remains in SQLite. Mutation responses omit embedded evidence and history. Case workers use the same policy contract for integrity verification and detection replay. Whole-store maintenance and the local connector CLI remain workstation operations. No tenant-scoped job invokes unfiltered maintenance.
 
-The production identity runtime keeps product routes closed until Task 4.5 provides trusted live membership and a resource directory. The existing loopback developer mode has its own trusted workstation context. The authorization policy store and the product store use separate SQLite databases.
+The hosted identity runtime can resolve verified principals against active memberships and a tenant-owned resource directory. See the [organization and tenant integration](../architecture/organization-tenancy.md). The existing loopback developer mode has its own trusted workstation context. The authorization policy store and the product store use separate SQLite databases.
 
 ## Delegation and revocation
 
@@ -16,4 +16,4 @@ Only a verified MFA session with organization-scoped role-management authority c
 
 The SQLite policy lock serializes scoped operations with policy updates. If revocation acquires the lock first, the operation sees the new policy. If the operation acquires it first, revocation waits until the operation finishes. Role and resource decisions are re-read under that lock without a cache. Audit records for denials persist. Product and policy writes use separate databases, so the two commits have no distributed atomicity guarantee. The lock serializes requests using this adapter and may limit throughput until production policy storage is introduced.
 
-Task 4.5 owns membership provisioning and organization routing. Product resource metadata, including proposer identity and evidence classification, must come from the trusted adapter. Resource grants and delegated role operations have internal contracts. Response execution remains disabled.
+The hosted tenancy adapter owns membership provisioning and organization routing. Product resource metadata, including proposer identity and evidence classification, must come from the trusted adapter. Resource grants and delegated role operations have internal contracts. Response execution remains disabled.

@@ -135,3 +135,13 @@ Production identity, authorization, and tenant-aware persistence are planned.
 | Information disclosure | Object enumeration, cross-tenant reads or bulk export | High / High | Resource grants, tenant match, indistinguishable object denials and constrained summary queries | Aggregations and export require explicit scoped evidence access. Resource metadata must remain accurate. |
 | Denial of service | Policy and audit storage are overloaded | Medium / Medium | Evaluation and audit failures deny protected operations | Collection evaluation and audit writes can be expensive. Add bounded indexed policy queries before production. |
 | Elevation of privilege | An administrator over-delegates or an agent inherits human tool access | Medium / High | Transactional bounded delegation, separate workload identities and exact permission checks | Response execution and autonomous tool integration remain future work. |
+
+## Organization tenancy
+
+| Threat | Control | Remaining exposure |
+| --- | --- | --- |
+| Cross-tenant ID lookup and impersonation | Authenticated tenant selection, active membership, server-owned case mapping and generic denial | Database-layer enforcement is scheduled for Task 4.7 |
+| Invitation theft and replay | MFA, verified identity binding, digest-only storage, 24-hour expiry and atomic consumption | Administrators distribute invitation tokens privately |
+| Owner loss and role escalation | Single owner constraint, active recipient check, owner-only transfer and role changes, transactional audit | Identity-provider account recovery remains external |
+| Stale access after revocation or suspension | Current membership lookup under the policy lock and immediate policy revocation | An operation that acquired the lock first can complete |
+| Organization discovery | Member-only discovery and indistinguishable denials | Administrators and current members see organization lifecycle metadata |

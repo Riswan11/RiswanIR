@@ -1,3 +1,4 @@
+import io
 import json
 import sqlite3
 from contextlib import closing
@@ -9,8 +10,13 @@ from wsgiref.util import setup_testing_defaults
 
 import pytest
 
+from riswan_app.authorization_repository import AuthorizationRepository
+from riswan_app.hosted_product import HostedProduct
 from riswan_app.identity_repository import SQLiteIdentityRepository
 from riswan_app.local import local_context
+from riswan_app.tenancy import Tenancy
+from riswan_app.tenant_api import TenantAPI
+from riswan_ir.storage.sqlite import Store
 from riswan_platform.core.context import require_context
 from riswan_platform.core.exceptions import ContextRequiredError
 from riswan_platform.identity.application import LOGIN, SESSION, IdentityApplication, RequestBudget
@@ -74,7 +80,18 @@ class FixtureProvider:
         return self.config.logout_url
 
 
-def call(app, path, method="GET", query="", cookie="", authorization="", origin=None):
+def call(
+    app,
+    path,
+    method="GET",
+    query="",
+    cookie="",
+    authorization="",
+    origin=None,
+    *,
+    payload=None,
+    tenant=None,
+):
     env = {}
     setup_testing_defaults(env)
     env.update(
@@ -85,6 +102,13 @@ def call(app, path, method="GET", query="", cookie="", authorization="", origin=
         HTTP_COOKIE=cookie,
         HTTP_AUTHORIZATION=authorization,
     )
+    if payload is not None:
+        raw = json.dumps(payload).encode()
+        env["wsgi.input"] = io.BytesIO(raw)
+        env["CONTENT_LENGTH"] = str(len(raw))
+        env["CONTENT_TYPE"] = "application/json"
+    if tenant is not None:
+        env["HTTP_X_RISWAN_TENANT"] = tenant
     if origin:
         env["HTTP_ORIGIN"] = origin
     result = []
@@ -269,3 +293,230 @@ def test_disabling_actor_also_denies_previously_valid_bearer(runtime):
     app.service.set_status(actor.identity, IdentityStatus.DISABLED, "workload")
     with pytest.raises(AuthenticationError):
         app.service.authenticate("workload", bearer="test-workload-token")
+
+
+@pytest.fixture
+def hosted_runtime(tmp_path, runtime, settings):
+    identity_app, identities, _ = runtime
+    control = AuthorizationRepository(tmp_path / "control.sqlite3")
+    tenancy = Tenancy(control, identities.is_active_human)
+    storage = Store(tmp_path / "hosted.sqlite3", hosted=True)
+    app = IdentityApplication(
+        identity_app.service,
+        authenticated_routes=TenantAPI(tenancy, HostedProduct(tenancy, storage), settings.origin),
+    )
+    alice, _ = login(app, "alice")
+    bob, _ = login(app, "bob")
+
+    def request(
+        path, method="GET", *, cookie=alice, payload=None, tenant=None, origin=settings.origin
+    ):
+        status, _, response = call(
+            app, path, method, cookie=cookie, origin=origin, payload=payload, tenant=tenant
+        )
+        return status, response
+
+    bob_id = request("/v1/identity/me", cookie=bob)[1]["identity_id"]
+    return request, bob, bob_id, control, storage
+
+
+def test_tenant_routing_enforces_membership_and_case_ownership(hosted_runtime, request_payload):
+    request, bob, bob_id, control, storage = hosted_runtime
+    assert request("/v1/organizations", cookie="")[0] == 401
+    assert (
+        request("/v1/organizations", "POST", payload={"name": "A"}, origin="https://other.example")[
+            0
+        ]
+        == 403
+    )
+    code, alpha = request("/v1/organizations", "POST", payload={"name": "Alpha"})
+    assert code == 201 and alpha["id"] != alpha["tenant_id"]
+    code, beta = request("/v1/organizations", "POST", cookie=bob, payload={"name": "Beta"})
+    assert code == 201
+    first, second = alpha["tenant_id"], beta["tenant_id"]
+    org = "/v1/organizations/" + alpha["id"]
+    cases = "/v1/investigations"
+    assert request(org, cookie=bob) == request(org[:-36] + beta["id"])
+    assert request(cases, cookie=bob, tenant=first)[0] == 404
+    assert request(cases)[0] == 404
+    assert request(org + "/activate", "POST")[1] == {"tenant_id": first}
+    code, result = request(cases, "POST", tenant=first, payload=request_payload)
+    assert code == 201
+    case = cases + "/" + result["id"]
+    assert request(case, tenant=first)[1]["evidence"]
+    assert request(case, tenant=second, cookie=bob) == request(
+        cases + "/" + "0" * 32, tenant=second, cookie=bob
+    )
+    assert request(cases, tenant=second, cookie=bob) == (200, [])
+    assert request(cases, tenant=first)[1][0]["id"] == result["id"]
+    assert (
+        request(org + "/invitations", "POST", payload={"identity_id": bob_id, "role": "owner"})[0]
+        == 404
+    )
+    code, invite = request(
+        org + "/invitations", "POST", payload={"identity_id": bob_id, "role": "viewer"}
+    )
+    assert code == 201
+    token = {"token": invite["token"]}
+    accept = "/v1/organizations/invitations/accept"
+    assert request(accept, "POST", payload=token)[0] == 404
+    assert request(accept, "POST", cookie=bob, payload=token) == (200, {"tenant_id": first})
+    assert request(accept, "POST", cookie=bob, payload=token)[0] == 404
+    assert invite["token"].encode() not in control.path.read_bytes()
+    assert len(request("/v1/organizations", cookie=bob)[1]) == 2
+    assert request(org + "/activate", "POST", cookie=bob)[1] == {"tenant_id": first}
+    assert request(case, tenant=first, cookie=bob)[0] == 200
+    assert request(cases, "POST", tenant=first, cookie=bob, payload=request_payload)[0] == 404
+    assert request(case + "/evidence/export", "POST", tenant=first, cookie=bob)[0] == 404
+    assert request(org + "/members", cookie=bob)[0] == 404
+    assert (
+        request(org + "/members/role", "PUT", payload={"identity_id": bob_id, "role": "analyst"})[0]
+        == 204
+    )
+    assert request(cases, "POST", tenant=first, cookie=bob, payload=request_payload)[0] == 201
+    assert request(org + "/members/" + bob_id, "DELETE")[0] == 204
+    assert request(case, tenant=first, cookie=bob)[0] == 404
+    assert request(cases, tenant=second, cookie=bob) == (200, [])
+    assert storage.owned_investigations(UUID(first)).keys() >= {result["id"]}
+    assert request(org + "/lifecycle", "POST", payload={"status": "suspended"})[0] == 200
+    assert request(case, tenant=first)[0] == 404
+    assert request(org + "/activate", "POST")[0] == 404
+    assert request(org + "/lifecycle", "POST", payload={"status": "active"})[0] == 200
+    assert request(case, tenant=first)[0] == 200
+
+
+def test_invitation_lifecycle_and_owner_transfer(hosted_runtime):
+    request, bob, bob_id, control, _ = hosted_runtime
+    _, org = request("/v1/organizations", "POST", payload={"name": "Original"})
+    path = "/v1/organizations/" + org["id"]
+    assert (
+        request(path, "PUT", payload={"name": "Updated", "settings": {"description": "Team"}})[1][
+            "name"
+        ]
+        == "Updated"
+    )
+    assert request(path)[1]["settings"] == {"description": "Team"}
+    invitee = {"identity_id": bob_id, "role": "analyst"}
+    accept = "/v1/organizations/invitations/accept"
+
+    def invite():
+        status, result = request(path + "/invitations", "POST", payload=invitee)
+        assert status == 201
+        return result
+
+    revoked = invite()
+    assert request(path + "/invitations/" + revoked["id"], "DELETE")[0] == 204
+    assert request(accept, "POST", cookie=bob, payload={"token": revoked["token"]})[0] == 404
+
+    expired = invite()
+    with control.atomic() as db:
+        db.execute(
+            "UPDATE organization_invitations SET expires_at = ? WHERE id = ?",
+            ("2000-01-01", expired["id"]),
+        )
+    assert request(accept, "POST", cookie=bob, payload={"token": expired["token"]})[0] == 404
+
+    invited = invite()
+    assert request(accept, "POST", cookie=bob, payload={"token": invited["token"]})[0] == 200
+    actor = request("/v1/identity/me")[1]["identity_id"]
+    assert request(path + "/members/" + actor, "DELETE")[0] == 404
+    assert (
+        request(path + "/ownership", "POST", cookie=bob, payload={"identity_id": actor})[0] == 404
+    )
+    assert request(path + "/ownership", "POST", payload={"identity_id": bob_id})[0] == 204
+    assert request(path + "/members", cookie=bob)[1][1]["role"] == "owner"
+    assert request(path + "/members")[0] == 404
+    assert (
+        request(path + "/lifecycle", "POST", cookie=bob, payload={"status": "archived"})[0] == 200
+    )
+    assert request(path + "/lifecycle", "POST", cookie=bob, payload={"status": "active"})[0] == 404
+    with control.atomic() as db:
+        audit = {row[0] for row in db.execute("SELECT event FROM organization_audit_events")}
+    assert {
+        "platform.tenancy.ownership_transferred",
+        "platform.tenancy.tenant_archived",
+        "platform.tenancy.invitation_revoked",
+        "platform.tenancy.request_denied",
+    } <= audit
+
+
+def test_invitation_consumption_is_atomic(hosted_runtime):
+    from concurrent.futures import ThreadPoolExecutor
+
+    request, bob, bob_id, _, _ = hosted_runtime
+    _, org = request("/v1/organizations", "POST", payload={"name": "Concurrent"})
+    _, invite = request(
+        f"/v1/organizations/{org['id']}/invitations",
+        "POST",
+        payload={"identity_id": bob_id, "role": "viewer"},
+    )
+
+    def accept():
+        return request(
+            "/v1/organizations/invitations/accept",
+            "POST",
+            cookie=bob,
+            payload={"token": invite["token"]},
+        )[0]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = sorted(executor.map(lambda _: accept(), range(2)))
+    assert outcomes == [200, 404]
+
+
+def test_ownership_migration_preserves_legacy_records(hosted_runtime, investigation_request):
+    request, _, _, _, hosted = hosted_runtime
+    legacy = Store(hosted.path)
+    report = legacy.create(investigation_request)
+    original_hashes = [event.integrity_hash for event in report.evidence]
+    assert original_hashes
+    _, org = request("/v1/organizations", "POST", payload={"name": "New tenant"})
+    tenant_id = org["tenant_id"]
+    assert request("/v1/investigations", tenant=tenant_id) == (200, [])
+    assert request(f"/v1/investigations/{report.id}", tenant=tenant_id)[0] == 404
+    restarted = Store(hosted.path)
+    assert [event.integrity_hash for event in restarted.get(report.id).evidence] == original_hashes
+    assert restarted.verify_evidence(report.id).valid
+
+
+def test_invalid_tenant_controls_return_generic_errors(hosted_runtime):
+    request, _, _, _, _ = hosted_runtime
+    assert request("/v1/organizations", "POST", payload={"name": " ", "tenant_id": "fake"}) == (
+        400,
+        {"error": "Invalid request."},
+    )
+    assert (
+        request("/v1/organizations/invitations/accept", "POST", payload={"token": "short"})[0]
+        == 400
+    )
+    assert request("/v1/investigations", tenant="-" * 36) == (404, {"error": "Resource not found."})
+
+
+def test_hosted_composition_separates_databases(tmp_path, monkeypatch, settings):
+    from riswan_app import identity_runtime
+
+    monkeypatch.setattr(identity_runtime, "has_crypto", True)
+    config = tmp_path / "oidc.json"
+    config.write_text(settings.model_dump_json(), encoding="utf-8")
+    identity = tmp_path / "identity.sqlite3"
+    local = tmp_path / "local.sqlite3"
+    hosted = tmp_path / "hosted.sqlite3"
+    control = tmp_path / "control.sqlite3"
+    with pytest.raises(ValueError, match="Configure both"):
+        identity_runtime.compose_identity(config, identity, local, control_db=control)
+    with pytest.raises(ValueError, match="must be separate"):
+        identity_runtime.compose_identity(
+            config, identity, local, control_db=control, hosted_db=local
+        )
+    standard = identity_runtime.compose_identity(config, identity, local)
+    assert standard._authenticated_routes is None
+    configured = identity_runtime.compose_identity(
+        config,
+        identity,
+        local,
+        control_db=control,
+        hosted_db=hosted,
+    )
+    assert isinstance(configured._authenticated_routes, TenantAPI)
+    assert identity.exists() and control.exists() and hosted.exists()
+    assert not local.exists()
