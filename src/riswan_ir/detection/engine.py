@@ -6,9 +6,10 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from itertools import islice
 
+from riswan_security_data.canonical_event import SecurityEvent, Status
+from riswan_security_data.integrity import canonical_json, sha256
+
 from ..core.fields import utc_timestamp
-from ..evidence.integrity import canonical_json, sha256
-from ..models.canonical_event import SecurityEvent, Status
 from ..models.detection import (
     DetectionCondition,
     DetectionContext,

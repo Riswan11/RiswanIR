@@ -104,3 +104,12 @@ Use the [risk register](risk-register.md) for owners and review triggers, and th
 | Information disclosure | History leaks unrelated account evidence or raw credentials. | Bound account-scope queries, current authorization and archival policy intersection, minimized records and scoped pseudonyms. | Privileged workstation access can read SQLite or test pseudonym guesses. |
 | Repudiation | Historical retrieval or a classification change is disputed. | Audit records capture case and time with policy or result digests, and classifications retain their evidence references. | Audit storage is local. |
 | Denial of service | A large history scan consumes processing or storage. | Candidate and output bounds, category expiration, explicit purge and minimized features. | Heavy repeated local calls can still consume resources. |
+
+## Platform context and event boundary
+
+The composition layer issues context from explicit workstation configuration and never derives tenant,
+actor, request, or correlation identifiers from HTTP headers. Missing or mismatched context fails
+closed for case operations. Event delivery checks tenant, product and correlation scope. Published
+notifications carry references, while integrity and custody records remain in SQLite transactions.
+The fixed development tenant covers one mounted database and does not authenticate local users.
+Production identity, authorization, and tenant-aware persistence are planned.

@@ -8,10 +8,12 @@ from wsgiref.validate import validator
 
 import pytest
 
+from riswan_app.local import LOCAL_TENANT, local_context
 from riswan_ir.api.http import Application
 from riswan_ir.models import InvestigationRequest
 from riswan_ir.models.collection import CollectionRequest
 from riswan_ir.models.connector import ConnectorConfig
+from riswan_ir.product import IRProduct
 from riswan_ir.storage.sqlite import Store
 
 
@@ -64,6 +66,7 @@ def fake_aws_session():
 
 @pytest.fixture(autouse=True)
 def deterministic_metadata(monkeypatch):
+    monkeypatch.setenv("RISWAN_IR_MODE", "local")
     when = "2025-01-01T04:00:00+00:00"
     ids = iter(range(1, 1000))
     monkeypatch.setattr("riswan_ir.storage.sqlite.uuid4", lambda: uuid.UUID(int=next(ids)))
@@ -98,7 +101,15 @@ def store(tmp_path):
 
 @pytest.fixture
 def client(store):
-    application = validator(Application(store))
+    product = IRProduct()
+    application = validator(
+        Application(
+            store,
+            context_provider=lambda: local_context("local", product.product_id),
+            tenant_id=LOCAL_TENANT,
+            product=product,
+        )
+    )
 
     def request(method, path, payload=None, *, raw=None, headers=None, length=None):
         body = (

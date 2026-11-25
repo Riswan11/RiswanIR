@@ -1,12 +1,13 @@
 """Compose the investigation report from the domain modules."""
 
+from riswan_security_data.canonical_event import Status
+
 from ..detection.engine import evaluate
 from ..detection.registry import default_registry
 from ..detection.rules import assess
 from ..knowledge_graph.edges import build_graph
 from ..knowledge_graph.identity_relationships import identity_edges
 from ..models import InvestigationRequest, InvestigationResult
-from ..models.canonical_event import Status
 from ..models.detection import DetectionContext, DetectionRule
 from ..models.security_event import Outcome
 from ..normalization.aws.detection_signals import project

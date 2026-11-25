@@ -2,17 +2,19 @@
 
 from datetime import datetime
 
+from riswan_security_data.integrity import canonical_json, sha256
+from riswan_security_data.provenance import CollectionContext, CollectionMethod
+
 from ..connectors.base import CollectedBatch, CollectionFailure
 from ..core.fields import required
-from ..evidence.integrity import canonical_json, sha256
 from ..models import CloudTrailRecord, InvestigationRequest
 from ..models.connector import ConnectorConfig
-from ..models.provenance import CollectionContext, CollectionMethod
-from ..storage.sqlite import Store
+from ..storage.checkpoint_store import accept_receipt
+from .ports import CollectionRepository
 
 
 def persist(
-    store: Store,
+    store: CollectionRepository,
     config: ConnectorConfig,
     batch: CollectedBatch,
     collected_at: datetime,
@@ -25,17 +27,11 @@ def persist(
             for record in batch.records:
                 event_id = required(record, "eventID")
                 digest = sha256(canonical_json(record))
-                existing = db.execute(
-                    "SELECT digest FROM collection_receipts WHERE scope = ? AND event_id = ? LIMIT 1",
-                    (scope, event_id),
-                ).fetchone()
-                if existing and existing["digest"] != digest:
-                    raise CollectionFailure("persist", "conflicting_event")
-                added = db.execute(
-                    "INSERT OR IGNORE INTO collection_receipts VALUES (?, ?, ?, ?)",
-                    (scope, batch.location, event_id, digest),
-                )
-                if added.rowcount:
+                try:
+                    accepted = accept_receipt(db, scope, batch.location, event_id, digest)
+                except FileExistsError:
+                    raise CollectionFailure("persist", "conflicting_event") from None
+                if accepted:
                     fresh.append(record)
             if fresh:
                 request = InvestigationRequest(

@@ -1,7 +1,8 @@
 """Project evidence into actor, target, and credential-use edges."""
 
+from riswan_security_data.canonical_event import SecurityEvent
+
 from ..models import GraphEdge, Relationship
-from ..models.canonical_event import SecurityEvent
 
 
 def build_graph(events: list[SecurityEvent]) -> list[GraphEdge]:

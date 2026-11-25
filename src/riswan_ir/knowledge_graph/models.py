@@ -4,8 +4,9 @@ from typing import Annotated, Self
 
 from pydantic import Field, JsonValue, StringConstraints, model_validator
 
+from riswan_security_data.canonical_event import CanonicalModel
+
 from ..models.base import Timestamp
-from ..models.canonical_event import CanonicalModel
 from ..models.correlation import CorrelationConfidence
 from .ontology import REGISTRY, Entity, Relation
 

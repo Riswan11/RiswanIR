@@ -4,8 +4,9 @@ import sqlite3
 from datetime import timedelta
 from fractions import Fraction
 
+from riswan_security_data.integrity import canonical_json, sha256
+
 from ..core.fields import utc_timestamp
-from ..evidence.integrity import canonical_json, sha256
 from . import repository
 from .baseline import evaluate
 from .models import WEIGHTS, Feedback, HistoricalMatch, Intelligence, MemoryPolicy, Pattern, Profile

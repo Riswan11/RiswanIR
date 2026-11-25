@@ -3,10 +3,11 @@
 from collections import defaultdict
 from collections.abc import Iterable
 
+from riswan_security_data.canonical_event import SecurityEvent, Status
+
 from ..core.fields import utc_timestamp
 from ..correlation.aws import arn_account, partition
 from ..models import InvestigationReport
-from ..models.canonical_event import SecurityEvent, Status
 from ..models.correlation import CorrelationConfidence
 from ..normalization.aws.ocsf_mapper import map_event
 from .models import GraphNode, Observation, SecurityGraph, SecurityRelationship

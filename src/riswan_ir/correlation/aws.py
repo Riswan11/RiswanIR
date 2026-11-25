@@ -1,7 +1,8 @@
 """AWS-specific identity scope and STS field extraction."""
 
+from riswan_security_data.integrity import canonical_json, sha256
+
 from ..core.fields import mapping, text_field
-from ..evidence.integrity import canonical_json, sha256
 from ..models import CloudTrailRecord
 from ..models.correlation import Identity, IdentityAlias
 from ..models.identity import CloudIdentity, PrincipalIdentity

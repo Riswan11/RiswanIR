@@ -4,14 +4,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from riswan_security_data.canonical_event import SecurityEvent
+from riswan_security_data.integrity import canonical_json, sha256
+
 from ...core.fields import utc_timestamp
 from ...detection.engine import equals, matches
 from ...detection.enrichment import Attributes, enrich
-from ...evidence.integrity import canonical_json, sha256
 from ...knowledge_graph.models import SecurityGraph
 from ...knowledge_graph.resolver import identifier
 from ...models import InvestigationReport
-from ...models.canonical_event import SecurityEvent
 from ...models.detection import DetectionRuleVersion
 from ...normalization.aws.ocsf_mapper import map_event
 from .graph import GraphLinks, Proof

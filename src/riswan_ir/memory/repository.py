@@ -6,8 +6,10 @@ from datetime import timedelta
 
 from pydantic import ValidationError
 
+from riswan_security_data.integrity import canonical_json, sha256
+
 from ..core.fields import utc_timestamp
-from ..evidence.integrity import canonical_json, sha256
+from ..storage.evidence_store import has_retained_case_payloads
 from .models import Category, Feedback, MemoryPolicy, Profile, Record
 
 SCHEMA = """
@@ -241,12 +243,7 @@ def read(
     config: MemoryPolicy,
     current: str,
 ) -> Profile | None:
-    expired = db.execute(
-        """SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
-           WHERE e.investigation_id = ? AND p.raw_id IS NULL LIMIT 1""",
-        (case_id,),
-    ).fetchone()
-    if expired:
+    if not has_retained_case_payloads(db, case_id):
         return None
     rows = db.execute(
         "SELECT category, payload, digest FROM memory_records WHERE case_id = ? AND expires_at > ?",
@@ -305,10 +302,6 @@ def candidates(
         AND EXISTS (SELECT 1 FROM memory_accounts a WHERE a.case_id = c.case_id AND a.account IN (SELECT value FROM json_each(?)))
         AND NOT EXISTS (SELECT 1 FROM memory_accounts a WHERE a.case_id = c.case_id AND a.account NOT IN (SELECT value FROM json_each(?)))
         AND NOT EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.case_id = c.case_id)
-        AND NOT EXISTS (
-            SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
-            WHERE e.investigation_id = c.case_id AND p.raw_id IS NULL
-        )
         ORDER BY c.indexed_at DESC, c.case_id LIMIT 101""",
         (time_key(after), time_key(as_of), keys, keys),
     )

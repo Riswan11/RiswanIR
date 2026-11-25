@@ -2,7 +2,8 @@
 
 from fractions import Fraction
 
-from ..evidence.integrity import canonical_json, sha256
+from riswan_security_data.integrity import canonical_json, sha256
+
 from ..knowledge_graph.resolver import identifier
 from .models import (
     Assessment,

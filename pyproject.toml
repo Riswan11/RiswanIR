@@ -45,7 +45,7 @@ addopts = ["--import-mode=importlib"]
 
 [tool.coverage.run]
 branch = true
-source = ["riswan_ir"]
+source = ["riswan_ir", "riswan_platform", "riswan_security_data", "riswan_app"]
 
 [tool.coverage.report]
 show_missing = true
@@ -61,7 +61,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/riswan_ir"]
+files = ["src/riswan_ir", "src/riswan_platform", "src/riswan_security_data", "src/riswan_app"]
 plugins = ["pydantic.mypy"]
 check_untyped_defs = true
 warn_unused_ignores = true

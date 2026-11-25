@@ -9,6 +9,7 @@ from ..models import Disposition, InvestigationReport
 from ..models.detection import DetectionContext
 from ..risk.repository import latest as risk_history
 from ..storage import evidence_store
+from ..storage.review_store import latest_disposition
 from . import repository
 from .features import extract
 from .models import AssessmentCategory, Feedback, MemoryPolicy, Profile
@@ -42,12 +43,9 @@ def index(
                 organizational=profile.factors.get("environment", []),
             )
             if inserted and "feedback" in config.enabled_categories:
-                row = db.execute(
-                    "SELECT disposition FROM reviews WHERE investigation_id = ? ORDER BY id DESC LIMIT 1",
-                    (report.id,),
-                ).fetchone()
-                if row:
-                    capture_review(db, report.id, Disposition(row[0]), config, current)
+                disposition = latest_disposition(db, report.id)
+                if disposition is not None:
+                    capture_review(db, report.id, disposition, config, current)
     return profile
 
 
@@ -89,17 +87,14 @@ def promote(
         raise ValueError("Duplicate feedback evidence references.")
     if not set(feedback.evidence_references) <= set(profile.evidence_references):
         raise ValueError("Feedback must reference evidence from the selected investigation.")
-    row = db.execute(
-        "SELECT disposition FROM reviews WHERE investigation_id = ? ORDER BY id DESC LIMIT 1",
-        (report.id,),
-    ).fetchone()
-    if row is None:
+    disposition = latest_disposition(db, report.id)
+    if disposition is None:
         raise ValueError("Record an analyst disposition before submitting historical feedback.")
-    if feedback.classification == "confirmed_threat" and row[0] != Disposition.CONFIRMED:
+    if feedback.classification == "confirmed_threat" and disposition != Disposition.CONFIRMED:
         raise ValueError("Confirmed memory requires a confirmed analyst disposition.")
     if (
         feedback.classification in {"authorized_activity", "false_positive"}
-        and row[0] != Disposition.BENIGN
+        and disposition != Disposition.BENIGN
     ):
         raise ValueError(
             "Authorized activity and false positives require a benign analyst disposition."

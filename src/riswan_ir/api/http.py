@@ -6,11 +6,19 @@ import re
 from http import HTTPStatus
 from importlib.resources import files
 from urllib.parse import parse_qs
+from uuid import UUID
+
+from riswan_platform.core.context import bind_context, require_context
+from riswan_platform.core.contracts import ContextProvider, ProductModule
+from riswan_platform.core.exceptions import ContextRequiredError
+from riswan_platform.events import DomainEvent, EventDispatcher
+from riswan_security_data.time import utc_timestamp
 
 from .. import frontend
 from ..core.errors import NotFoundError
 from ..core.fields import now
 from ..correlation.temporal.service import serve as serve_temporal
+from ..investigation.ports import CaseRepository
 from ..knowledge_graph.service import serve_graph
 from ..memory.models import Feedback as MemoryFeedback
 from ..models import (
@@ -18,6 +26,7 @@ from ..models import (
     AnalystFeedback,
     ApprovalDecision,
     EvidenceSubmission,
+    InvestigationReport,
     InvestigationRequest,
 )
 from ..risk.models import Reassessment
@@ -29,8 +38,20 @@ LOGGER = logging.getLogger(__name__)
 
 
 class Application:
-    def __init__(self, store):
+    def __init__(
+        self,
+        store: CaseRepository,
+        *,
+        context_provider: ContextProvider | None = None,
+        tenant_id: UUID | None = None,
+        product: ProductModule | None = None,
+        dispatcher: EventDispatcher | None = None,
+    ):
         self.store = store
+        self._context_provider = context_provider
+        self._tenant_id = tenant_id
+        self._product = product
+        self._dispatcher = dispatcher
 
     def __call__(self, env, start_response):
         content_type = "application/json"
@@ -50,8 +71,19 @@ class Application:
                 result = files(frontend).joinpath(env["PATH_INFO"].rsplit("/", 1)[-1]).read_bytes()
                 status, content_type = 200, "image/svg+xml"
             else:
-                status, result = self.route(env)
+                if self._context_provider is None or self._product is None:
+                    raise ContextRequiredError("Trusted execution context is required.")
+                context = self._context_provider()
+                with bind_context(context):
+                    if (context.tenant_id, context.product_id) != (
+                        self._tenant_id,
+                        self._product.product_id,
+                    ):
+                        raise ContextRequiredError("Invalid application scope.")
+                    status, result = self.route(env)
             body = result if isinstance(result, bytes) else json.dumps(result).encode()
+        except ContextRequiredError:
+            status, body = 403, b'{"error":"Trusted execution context is required."}'
         except (ValueError, RecursionError) as exc:
             status, body = 400, json.dumps({"error": str(exc)}).encode()
         except FileExistsError as exc:
@@ -94,7 +126,26 @@ class Application:
             raise ValueError("Provide a JSON object.")
         return data
 
+    def _created(self, report: InvestigationReport) -> dict[str, object]:
+        if self._dispatcher:
+            context = require_context()
+            self._dispatcher.publish(
+                DomainEvent.from_context(
+                    context,
+                    "ir.investigation.created",
+                    utc_timestamp(report.created_at),
+                    report.id,
+                )
+            )
+        return report.payload()
+
     def route(self, env):
+        context = require_context()
+        if self._product is None or (context.tenant_id, context.product_id) != (
+            self._tenant_id,
+            self._product.product_id,
+        ):
+            raise ContextRequiredError("Invalid application scope.")
         method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
         if path == "/v1/memory/expire" and method == "POST":
             return 200, {"expired": self.store.memory_expire()}
@@ -103,7 +154,7 @@ class Application:
                 return 200, [summary.payload() for summary in self.store.list()]
             if method == "POST":
                 request = InvestigationRequest.model_validate(self.body(env))
-                return 201, self.store.create(request).payload()
+                return 201, self._created(self.store.create(request))
         match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
         if match:
             investigation_id, suffix = match.groups()
@@ -165,7 +216,7 @@ class Application:
                 return 200, export_events(self.store.get(investigation_id))
             if method == "POST" and suffix == "/revisions":
                 supplement = EvidenceSubmission.model_validate(self.body(env))
-                return 201, self.store.revise(investigation_id, supplement).payload()
+                return 201, self._created(self.store.revise(investigation_id, supplement))
             if method == "POST" and suffix == "/feedback":
                 feedback = AnalystFeedback.model_validate(self.body(env))
                 return 201, self.store.feedback(investigation_id, feedback).payload()
