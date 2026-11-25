@@ -31,6 +31,8 @@ def main(*, local_launcher: bool = False):
                 Path(database_path()),
                 control_db=Path(control) if control else None,
                 hosted_db=Path(hosted) if hosted else None,
+                secrets_region=setting("SECRETS_REGION"),
+                secrets_kms_key=setting("SECRETS_KMS_KEY"),
             )
         except (ValueError, OSError):
             raise SystemExit("Invalid identity runtime configuration.") from None

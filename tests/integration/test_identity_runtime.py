@@ -520,3 +520,80 @@ def test_hosted_composition_separates_databases(tmp_path, monkeypatch, settings)
     assert isinstance(configured._authenticated_routes, TenantAPI)
     assert identity.exists() and control.exists() and hosted.exists()
     assert not local.exists()
+
+
+def test_secret_api_separates_tenants_and_never_returns_material(tmp_path, runtime, settings):
+    from riswan_app.secret_api import SecretAPI
+    from riswan_app.secret_providers import MemoryProvider
+    from riswan_app.secrets import Secrets
+
+    original, identities, _ = runtime
+    control = AuthorizationRepository(tmp_path / "secrets-control.sqlite3")
+    tenancy = Tenancy(control, identities.is_active_human, identities.is_active_workload)
+    storage = Store(tmp_path / "product.sqlite3", hosted=True)
+    app = IdentityApplication(
+        original.service,
+        authenticated_routes=TenantAPI(
+            tenancy,
+            HostedProduct(tenancy, storage),
+            settings.origin,
+            SecretAPI(Secrets(tenancy, MemoryProvider(), environment="test")),
+        ),
+    )
+    alice, _ = login(app, "alice")
+    bob, _ = login(app, "bob")
+    _, _, organization = call(
+        app,
+        "/v1/organizations",
+        "POST",
+        cookie=alice,
+        origin=settings.origin,
+        payload={"name": "A"},
+    )
+    _, _, other = call(
+        app, "/v1/organizations", "POST", cookie=bob, origin=settings.origin, payload={"name": "B"}
+    )
+    from uuid import uuid4
+
+    base, identifier = "/v1/secrets", str(uuid4())
+    path = f"{base}/{identifier}"
+    value = "synthetic-credential-that-must-not-leak"
+
+    def send(route, method="GET", body=None, *, foreign=False):
+        cookie, tenant = (bob, other) if foreign else (alice, organization)
+        status, _, data = call(
+            app,
+            route,
+            method,
+            cookie=cookie,
+            origin=settings.origin,
+            payload=body,
+            tenant=tenant["tenant_id"],
+        )
+        assert value not in json.dumps(data)
+        return status, data
+
+    assert call(app, base)[0] == 401
+    assert (
+        send(
+            base, "POST", {"id": identifier, "kind": "api_key", "name": "Connector", "value": value}
+        )[0]
+        == 201
+    )
+    assert send(base, foreign=True) == (200, [])
+    assert send(path, foreign=True)[0] == 404
+    assert send(path, "DELETE", foreign=True)[0] == 404
+    assert (
+        send(
+            path + "/rotate", "POST", {"operation_id": str(uuid4()), "value": value}, foreign=True
+        )[0]
+        == 404
+    )
+    assert send(path + "/value")[0] == 404
+    assert send(path, "PATCH", {"name": "Renamed"})[1]["name"] == "Renamed"
+    assert send(path + "/versions")[1][0]["state"] == "active"
+    assert send(path + "/audit")[1]
+    assert value.encode() not in control.path.read_bytes()
+    assert send(path + "/revoke", "POST")[1]["status"] == "revoked"
+    assert send(path, "DELETE")[1]["status"] == "pending_deletion"
+    assert send(path + "/confirm-deletion", "POST")[1]["status"] == "deleted"

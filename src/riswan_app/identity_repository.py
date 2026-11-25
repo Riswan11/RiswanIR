@@ -118,6 +118,16 @@ class SQLiteIdentityRepository:
             ).fetchone()
             return row is not None and tuple(row) == ("human", "active")
 
+    def is_active_workload(self, identity_id: UUID) -> bool:
+        with self._connect() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM identities WHERE id = ? AND status = 'active' AND kind IN ('service', 'integration')",
+                    (str(identity_id),),
+                ).fetchone()
+                is not None
+            )
+
     def resolve(self, external: ExternalIdentity, now: datetime) -> PlatformIdentity:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")

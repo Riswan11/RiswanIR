@@ -16,6 +16,14 @@ class Permission(StrEnum):
     ROLES_ASSIGN = "platform.roles.assign"
     INTEGRATIONS_MANAGE = "platform.integrations.manage"
     AUDIT_READ = "platform.audit.read"
+    SECRET_CREATE = "platform.secrets.create"
+    SECRET_READ = "platform.secrets.read"
+    SECRET_UPDATE = "platform.secrets.update"
+    SECRET_ROTATE = "platform.secrets.rotate"
+    SECRET_REVOKE = "platform.secrets.revoke"
+    SECRET_DELETE = "platform.secrets.delete"
+    SECRET_POLICY = "platform.secrets.policy"
+    SECRET_AUDIT = "platform.secrets.audit"
     READ = "ir.investigation.read"
     CREATE = "ir.investigation.create"
     UPDATE = "ir.investigation.update"
@@ -54,10 +62,23 @@ class Role(StrEnum):
 P = Permission
 VIEW = frozenset({P.READ, P.EVIDENCE})
 ANALYZE = VIEW | {P.GRAPH, P.DETECTION_READ, P.MEMORY}
+SECRET_ADMIN = frozenset(
+    {
+        P.SECRET_CREATE,
+        P.SECRET_READ,
+        P.SECRET_UPDATE,
+        P.SECRET_ROTATE,
+        P.SECRET_REVOKE,
+        P.SECRET_DELETE,
+        P.SECRET_POLICY,
+        P.SECRET_AUDIT,
+    }
+)
 ROLE_PERMISSIONS = {
     Role.OPERATOR: frozenset({P.IDENTITY_READ}),
-    Role.OWNER: frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN, P.AUDIT_READ}),
-    Role.ADMIN: frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN}),
+    Role.OWNER: SECRET_ADMIN | frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN, P.AUDIT_READ}),
+    Role.ADMIN: {P.SECRET_READ, P.SECRET_CREATE, P.SECRET_ROTATE, P.SECRET_REVOKE}
+    | frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN}),
     Role.INTEGRATION: frozenset({P.INTEGRATIONS_MANAGE}),
     Role.AUDITOR: frozenset({P.AUDIT_READ}),
     Role.IR_ADMIN: ANALYZE | {P.DETECTION_MANAGE, P.SETTINGS},
@@ -69,7 +90,7 @@ ROLE_PERMISSIONS = {
     Role.VIEWER: VIEW,
     Role.AGENT: frozenset({P.READ, P.EVIDENCE, P.GRAPH, P.PROPOSE}),
 }
-PRIVILEGED = frozenset(
+PRIVILEGED = SECRET_ADMIN | frozenset(
     {
         P.ROLES_ASSIGN,
         P.ORGANIZATION_MANAGE,

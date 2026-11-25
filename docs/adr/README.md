@@ -57,3 +57,9 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [Authorization Auditing and Revocation](0043-authorization-audit-revocation.md)
 
 - [0044 Shared organization tenancy](0044-shared-organization-tenancy.md)
+
+- [Secret provider abstraction](0045-secret-provider-abstraction.md)
+
+- [Temporary credentials](0046-temporary-credentials.md)
+
+- [Secret storage boundaries](0047-secret-storage-boundaries.md)
