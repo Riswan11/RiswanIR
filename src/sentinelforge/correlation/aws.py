@@ -6,6 +6,7 @@ from ..models import CloudTrailRecord
 from ..models.correlation import Identity, IdentityAlias
 from ..models.identity import CloudIdentity, PrincipalIdentity
 from ..normalization.aws.cloudtrail import PreparedEvent
+from ..normalization.aws.ocsf_mapper import map_event
 from .engine import Observation
 
 
@@ -94,7 +95,10 @@ class AWSIdentityResolver:
         if event.event in ("CreateAccessKey", "GetSessionToken"):
             target_account = resolved.account_id
         return Observation(
-            event=event,
+            event=map_event(event),
+            request_id=event.request_id,
+            shared_request_id=event.shared_event_id,
+            recipient_account_id=event.recipient_account_id,
             identity=resolved,
             issuer_arn=session.issuer.arn if session and session.issuer else None,
             session_created=session.created_at if session else None,

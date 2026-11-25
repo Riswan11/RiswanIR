@@ -7,13 +7,13 @@ from uuid import NAMESPACE_URL, uuid5
 
 from ..core.fields import mapping, text_field
 from ..evidence.integrity import attach_reference, canonical_json, sha256
-from ..models import Evidence, InvestigationRequest
+from ..models import InvestigationReport, InvestigationRequest, InvestigationResult
+from ..models.canonical_event import SecurityEvent
 from ..models.chain_of_custody import (
     ChainOfCustodyEntry,
     EvidenceIntegrity,
     EvidenceRetentionPolicy,
 )
-from ..models.correlation import CorrelationResult
 from ..models.evidence import RawEvidence
 from ..models.provenance import EvidenceProvenance, EvidenceReference, EvidenceTransformation
 
@@ -108,13 +108,12 @@ def record_transformations(
     case_id: str,
     request: InvestigationRequest,
     timestamp: str,
-    evidence: list[Evidence],
+    result: InvestigationResult,
     origins: dict[str, EvidenceProvenance],
-    correlation: CorrelationResult | None,
-) -> list[Evidence]:
+) -> None:
     results = []
     transformations = []
-    for item in evidence:
+    for item in result.evidence:
         origin = origins[item.id]
         reference = EvidenceReference(
             evidence_id=uuid5(NAMESPACE_URL, f"sentinelforge:{case_id}:{item.id}").hex,
@@ -141,6 +140,13 @@ def record_transformations(
         transformations.append(transformation.model_dump(mode="json"))
         results.append(linked)
     transformations.sort(key=lambda entry: entry["source_event_id"])
+    result.evidence = results
+    if result.canonical_events is not None:
+        references = {item.id: item.reference for item in results}
+        result.canonical_events = [
+            event.model_copy(update={"evidence": references[event.id]})
+            for event in result.canonical_events
+        ]
     append_custody(
         db,
         case_id,
@@ -148,12 +154,20 @@ def record_transformations(
         timestamp,
         {
             "transformations_digest": sha256(canonical_json(transformations)),
-            "correlation_digest": sha256(canonical_json(correlation.payload()))
-            if correlation
+            "correlation_digest": sha256(canonical_json(result.correlation.payload()))
+            if result.correlation
             else None,
+            "canonical_digest": canonical_digest(result.canonical_events),
         },
     )
-    return results
+
+
+def canonical_digest(events: list[SecurityEvent] | None) -> str | None:
+    return (
+        sha256(canonical_json([event.payload() for event in events]))
+        if events is not None
+        else None
+    )
 
 
 def custody(db: sqlite3.Connection, case_id: str) -> list[ChainOfCustodyEntry]:
@@ -244,9 +258,9 @@ def original_records(db: sqlite3.Connection, case_id: str) -> list[dict[str, obj
 def verify(
     db: sqlite3.Connection,
     case_id: str,
-    evidence: list[Evidence],
-    correlation: CorrelationResult | None,
+    report: InvestigationReport,
 ) -> EvidenceIntegrity:
+    evidence, correlation = report.evidence, report.correlation
     problems = []
     history = custody(db, case_id)
     origins = receipts(db, case_id)
@@ -274,6 +288,8 @@ def verify(
         expected = sha256(canonical_json(correlation.payload())) if correlation else None
         if history[1].details.get("correlation_digest") != expected:
             problems.append("Correlation snapshot verification failed.")
+        if history[1].details.get("canonical_digest") != canonical_digest(report.canonical_events):
+            problems.append("Canonical event snapshot verification failed.")
         for anchor, name, items in (
             (history[0], "receipts_digest", origins),
             (history[1], "transformations_digest", versions),

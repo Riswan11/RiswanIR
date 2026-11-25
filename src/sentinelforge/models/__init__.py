@@ -13,6 +13,7 @@ from pydantic import (
 
 from ..ingestion.exports import export_records
 from .base import DomainModel, Text, Timestamp
+from .canonical_event import SecurityEvent as CanonicalEvent
 from .correlation import CorrelationConfidence, CorrelationResult
 from .evidence import Evidence as Evidence
 from .provenance import CollectionContext
@@ -157,6 +158,7 @@ class InvestigationResult(DomainModel):
     assessment: RiskAssessment
     action: AdvisoryAction | None
     correlation: CorrelationResult | None = None
+    canonical_events: list[CanonicalEvent] | None = None
 
     @model_validator(mode="after")
     def validate_references(self) -> Self:
@@ -170,6 +172,14 @@ class InvestigationResult(DomainModel):
             references.update(self.action.evidence_ids)
         if self.correlation:
             references.update(self.correlation.supporting_ids())
+        if self.canonical_events is not None:
+            by_id = {item.id: item.reference for item in self.evidence}
+            if (
+                len(self.canonical_events) != len(self.evidence)
+                or {event.id for event in self.canonical_events} != ids
+                or any(event.evidence != by_id[event.id] for event in self.canonical_events)
+            ):
+                raise ValueError("Canonical events must reference their normalized evidence.")
         references.update(item for edge in self.graph for item in edge.evidence_ids)
         references.update(
             item.linked_from_evidence_id for item in self.evidence if item.linked_from_evidence_id

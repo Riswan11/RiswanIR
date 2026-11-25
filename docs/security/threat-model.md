@@ -36,6 +36,12 @@ The risk column estimates exposure before the stated controls. Residual risk ref
 | SF-12 | D · Local filesystem, SQLite and OS configuration | Database loss, corrupted storage, or an invalid database path prevents reading reports. | Medium / High / High | SQLite transactions and injectable database path. | Document backup and restore testing, storage monitoring, and recovery responsibilities. | Medium. No application-managed recovery or backup. |
 | SF-13 | T, D · Build and dependency services | An unavailable advisory feed or hosted runner prevents required checks from completing. | Medium / Medium / Medium | Required checks gate merging and expose failures; scheduled security runs detect later feed changes. | Document retry and incident handling, and define a reviewed recovery process. | Medium. Availability still depends on third-party services. |
 
+## Canonical schema and export
+
+| ID | STRIDE and affected component | Scenario | Likelihood / impact / risk | Existing controls | Proposed mitigation | Residual |
+| --- | --- | --- | --- | --- | --- | --- |
+| SF-18 | T, I · Mapping, registry and export | Mapping changes misclassify telemetry or disclose sensitive provider fields. | Medium / High / High | Pinned classes, typed extension allowlists, safe validation messages, a separate custody digest and preserved evidence references. | Review mapping semantics and field sensitivity before adding classes or extensions. | Medium. Exported metadata remains sensitive and a flawed rule can mislead readers. |
+
 ## Future features and new boundaries
 
 | ID | STRIDE and proposed component | Scenario | Projected likelihood / impact / risk | Existing controls | Mitigations required before rollout | Current residual |

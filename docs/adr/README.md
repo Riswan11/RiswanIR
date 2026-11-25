@@ -12,3 +12,4 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0008 DevSecOps quality gates](0008-devsecops-quality-gates.md)
 - [0009 Read-only AWS collection](0009-aws-read-only-collection.md)
 - [0010 Evidence-backed identity and session correlation](0010-identity-session-correlation.md)
+- [0011 OCSF-aligned canonical events](0011-ocsf-aligned-events.md)
