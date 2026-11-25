@@ -9,6 +9,7 @@ from importlib.resources import files
 from .. import frontend
 from ..core.errors import NotFoundError
 from ..core.fields import now
+from ..correlation.temporal.service import serve as serve_temporal
 from ..knowledge_graph.service import serve_graph
 from ..models import (
     ActionDecision,
@@ -95,6 +96,16 @@ class Application:
         match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
         if match:
             investigation_id, suffix = match.groups()
+            if method == "GET" and (
+                suffix in {"/temporal-correlation", "/temporal-correlation/replay", "/incidents"}
+                or suffix.startswith("/incidents/")
+            ):
+                return 200, serve_temporal(
+                    self.store,
+                    investigation_id,
+                    suffix,
+                    env.get("QUERY_STRING", ""),
+                )
             if method == "GET" and (
                 suffix == "/knowledge-graph" or suffix.startswith("/knowledge-graph/")
             ):

@@ -77,3 +77,12 @@ Use the [risk register](risk-register.md) for owners and review triggers, and th
 | Information disclosure | A relationship lookup returns a different case, or an account view includes unrelated observations. | The repository reads by investigation ID. Account views filter nodes and supporting observation events by account and partition. | Local clients can open other cases using this single-operator API. Case IDs are not authorization credentials. |
 | Denial of service | Large traversals or high fanout overwhelm the local service. | Graph construction bounds nodes and observations. Graph queries limit request width, depth and returned entries. | Repeated local requests may still consume resources. |
 | Elevation of privilege | An advisory graph relationship is interpreted as permission to execute remediation. | Graph API is read-only and action states reflect the separate analyst decision workflow. | Downstream tooling must preserve the advisory boundary. |
+
+## Temporal correlation
+
+| STRIDE | Threat | Existing control | Residual risk |
+| --- | --- | --- | --- |
+| Spoofing and tampering | Forged timestamps, actor records, or a modified policy create or hide incidents. | Strict UTC ordering, scoped graph evidence, validated YAML, versioned policy archives, and evidence custody verification on replay. | Imported CloudTrail telemetry is not independently attested. A privileged database writer can alter local archives. |
+| Information disclosure | Traversal joins unrelated accounts or cases. | Case-scoped repositories and graph edges, scoped attribution, and a directional operator allowlist for cross-account paths. | Filesystem access and the single-operator service remain the trust boundary. |
+| Denial of service | Candidate expansion exhausts memory or CPU. | Limits on events, YAML, stages, live states, graph traversal, and retained results with truncation metrics. | Heavy or repeated local requests may delay analysis. |
+| Elevation of privilege | A candidate is used to justify automated remediation. | Incident API is read-only and recommendations are advisory. | Downstream consumers must preserve analyst review. |

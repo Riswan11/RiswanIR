@@ -1,5 +1,6 @@
 """Persist investigations, analyst feedback, and action decisions in SQLite."""
 
+import logging
 import os
 import sqlite3
 from contextlib import closing, contextmanager
@@ -11,6 +12,10 @@ from pydantic import TypeAdapter, ValidationError
 
 from ..core.errors import NotFoundError
 from ..core.fields import now, utc_timestamp
+from ..correlation.temporal import repository as temporal_repository
+from ..correlation.temporal.engine import run as correlate_temporal
+from ..correlation.temporal.models import TemporalPolicy, TemporalResult, TemporalSnapshot
+from ..correlation.temporal.registry import default_rules, read_rules, select_rules
 from ..detection.engine import evaluate
 from ..detection.registry import RuleRegistry, default_registry
 from ..evidence.redaction import redact_record
@@ -65,6 +70,7 @@ def deserialize_report(payload: str) -> InvestigationReport:
 
 
 RULE_LIST = TypeAdapter(list[DetectionRule])
+LOGGER = logging.getLogger(__name__)
 
 
 class Store:
@@ -96,7 +102,11 @@ class Store:
                 pass
         with self.connect() as db:
             db.executescript(
-                SCHEMA + evidence_store.EVIDENCE_SCHEMA + checkpoint_store.SCHEMA + GRAPH_SCHEMA
+                SCHEMA
+                + evidence_store.EVIDENCE_SCHEMA
+                + checkpoint_store.SCHEMA
+                + GRAPH_SCHEMA
+                + temporal_repository.SCHEMA
             )
 
     @contextmanager
@@ -146,8 +156,82 @@ class Store:
             "UPDATE investigations SET report = ? WHERE id = ?",
             (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
         )
-        SQLiteGraphRepository(db).save(build_security_graph(report))
+        graph = build_security_graph(report)
+        SQLiteGraphRepository(db).save(graph)
+        prior = temporal_repository.load(db, previous) if previous else None
+        lineage = prior.result.lineage_id if prior else previous or case_id
+        rules_path = os.getenv("SENTINELFORGE_TEMPORAL_RULES")
+        temporal_rules = read_rules(Path(rules_path)) if rules_path else default_rules()
+        policy_path = os.getenv("SENTINELFORGE_TEMPORAL_POLICY")
+        policy = TemporalPolicy(enrichment=self.detection_context)
+        if policy_path:
+            with Path(policy_path).open("rb") as source:
+                data = source.read(1_000_001)
+            if len(data) > 1_000_000:
+                raise ValueError("Temporal policy file is too large.")
+            policy = TemporalPolicy.model_validate_json(data)
+            if "enrichment" not in policy.model_fields_set:
+                policy.enrichment = self.detection_context
+        result_ = correlate_temporal(
+            report,
+            graph,
+            select_rules(temporal_rules),
+            policy,
+            self._received_times(db, case_id),
+            lineage,
+        )
+        LOGGER.info("Temporal correlation metrics %s", result_.metrics.model_dump_json())
+        temporal_repository.save(
+            db, TemporalSnapshot(result=result_, rules=temporal_rules, policy=policy)
+        )
         return case_id
+
+    @staticmethod
+    def _received_times(db: sqlite3.Connection, case_id: str) -> dict[str, str]:
+        times: dict[str, str] = {}
+        for origin in evidence_store.receipts(db, case_id):
+            event_id = origin.source_event_id.strip()
+            observed = utc_timestamp(origin.ingested_at).isoformat()
+            times[event_id] = min(times.get(event_id, observed), observed)
+        return times
+
+    def temporal_result(self, case_id: str) -> TemporalResult:
+        with self.connect() as db:
+            snapshot = temporal_repository.load(db, case_id)
+        return snapshot.result if snapshot else self.replay_temporal(case_id)
+
+    def replay_temporal(
+        self, case_id: str, versions: dict[str, str] | None = None
+    ) -> TemporalResult:
+        with self.connect() as db:
+            db.execute("BEGIN")
+            row = db.execute(
+                "SELECT report FROM investigations WHERE id = ?", (case_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("Investigation not found.")
+            report = deserialize_report(row["report"])
+            if not evidence_store.verify(db, case_id, report).valid:
+                raise ValueError("Temporal replay requires verified investigation evidence.")
+            snapshot = temporal_repository.load(db, case_id)
+            received = self._received_times(db, case_id)
+        graph = build_security_graph(report)
+        policy = snapshot.policy if snapshot else TemporalPolicy()
+        catalog = snapshot.rules if snapshot else default_rules()
+        lineage = snapshot.result.lineage_id if snapshot else case_id
+        baseline_versions = (
+            {item.id: item.version for item in snapshot.result.rules} if snapshot else None
+        )
+        baseline = correlate_temporal(
+            report, graph, select_rules(catalog, baseline_versions), policy, received, lineage
+        )
+        if snapshot and baseline != snapshot.result:
+            raise ValueError("Archived temporal correlation cannot be reproduced.")
+        if versions is None:
+            return baseline
+        return correlate_temporal(
+            report, graph, select_rules(catalog, versions), policy, received, lineage
+        )
 
     def security_graph(self, investigation_id: str) -> SecurityGraph:
         with self.connect() as db:

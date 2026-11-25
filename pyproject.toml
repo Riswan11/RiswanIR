@@ -31,6 +31,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "sentinelforge.frontend" = ["index.html"]
 "sentinelforge.detection" = ["aws-rules.yml"]
+"sentinelforge.correlation.temporal" = ["aws-rules.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
