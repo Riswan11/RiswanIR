@@ -299,3 +299,67 @@ def test_metadata_expiration_rollback_and_redaction(secrets):
         {"secret": VALUE, "result": "ok", "item": SecretMaterial(value=VALUE)},
         allowed=frozenset({"result", "item"}),
     ) == {"result": "ok"}
+
+
+def test_registered_broker_authorizes_before_resolving_provider(secrets):
+    from unittest.mock import Mock
+
+    from riswan_app.registered_credentials import CredentialRegistration, RegisteredCredentialBroker
+    from riswan_platform.secrets import CredentialLease
+    from riswan_platform.secrets.providers import (
+        Binding,
+        Capability,
+        CredentialRequest,
+        Entry,
+        ExternalReference,
+        GCPNamespace,
+        Registry,
+    )
+
+    service, owner, worker, org, now = secrets
+    with service.repository.atomic() as db:
+        joined = db.execute(
+            "SELECT joined_at FROM organization_memberships WHERE tenant_id = ? AND identity_id = ?",
+            (str(org.tenant_id), str(worker.identity.identity_id)),
+        ).fetchone()[0]
+    namespace = GCPNamespace(project="synthetic", location="global")
+    request = CredentialRequest(
+        integration_id=uuid4(),
+        workload_id=worker.identity.identity_id,
+        resource=ExternalReference(namespace=namespace, native_id="integration"),
+        audience="synthetic-audience",
+        purpose="collect",
+    )
+    binding = Binding(
+        instance_id=uuid4(),
+        tenant_id=org.tenant_id,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.CREDENTIAL_ISSUE},
+    )
+    provider = Mock()
+    provider.execute.return_value = CredentialLease(
+        id=uuid4(), expires_at=now[0] + timedelta(minutes=5)
+    )
+    registry = Registry([Entry(binding, provider)], environment="test")
+    registration = CredentialRegistration(binding.instance_id, org.tenant_id, "ir", joined, request)
+    broker = RegisteredCredentialBroker(service, registry, {request.integration_id: registration})
+    principal, context = contexts(service, owner, org)
+    with principal, context, pytest.raises(AccessDenied):
+        broker.execute(request.integration_id, "collect")
+    provider.execute.assert_not_called()
+    principal, context = contexts(service, worker, org)
+    with principal, context:
+        with pytest.raises(AccessDenied):
+            broker.execute(request.integration_id, "different")
+        assert broker.execute(request.integration_id, "collect") == provider.execute.return_value
+        provider.execute.assert_called_once_with(request)
+        expired = CredentialLease(id=uuid4(), expires_at=now[0])
+        provider.execute.return_value = expired
+        with pytest.raises(AccessDenied):
+            broker.execute(request.integration_id, "collect")
+    service.tenancy.revoke_member(owner, org.id, worker.identity.identity_id, "revoke")
+    service.tenancy.register_workload(owner, org.id, worker.identity.identity_id, "return")
+    principal, context = contexts(service, worker, org)
+    with principal, context, pytest.raises(AccessDenied):
+        broker.execute(request.integration_id, "collect")

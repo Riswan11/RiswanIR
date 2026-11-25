@@ -63,3 +63,5 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [Temporary credentials](0046-temporary-credentials.md)
 
 - [Secret storage boundaries](0047-secret-storage-boundaries.md)
+
+- [Tenant-bound cloud provider instances](0048-cloud-provider-instance-identity.md)
