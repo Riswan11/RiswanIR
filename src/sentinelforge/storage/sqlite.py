@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from ..core.errors import NotFoundError
 from ..core.fields import now, utc_timestamp
+from ..evidence.redaction import redact_record
 from ..investigation.analysis import analyze
 from ..memory.similarity import similar_investigations
 from ..models import (
@@ -17,11 +18,13 @@ from ..models import (
     AnalystFeedback,
     AnalystReview,
     Disposition,
+    EvidenceSubmission,
     InvestigationReport,
     InvestigationRequest,
     InvestigationSummary,
 )
 from ..models.chain_of_custody import EvidenceIntegrity, EvidenceRetentionPolicy
+from ..models.provenance import EvidenceProvenance
 from . import checkpoint_store, evidence_store
 
 SCHEMA = """
@@ -71,20 +74,60 @@ class Store:
             case_id = self.create_in_transaction(db, request)
         return self.get(case_id)
 
-    def create_in_transaction(self, db: sqlite3.Connection, request: InvestigationRequest) -> str:
+    def create_in_transaction(
+        self,
+        db: sqlite3.Connection,
+        request: InvestigationRequest,
+        *,
+        previous: str | None = None,
+        inherited: tuple[EvidenceProvenance, ...] = (),
+    ) -> str:
+        request = request.model_copy(
+            update={"records": [redact_record(record) for record in request.records]}
+        )
         case_id, timestamp = uuid4().hex, now()
         db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
-        origins = evidence_store.ingest(db, case_id, request, timestamp)
+        origins = evidence_store.ingest(db, case_id, request, timestamp, inherited)
         result = analyze(request)
         result.evidence = evidence_store.record_transformations(
-            db, case_id, request, timestamp, result.evidence, origins
+            db, case_id, request, timestamp, result.evidence, origins, result.correlation
         )
         report = InvestigationReport(id=case_id, created_at=timestamp, **dict(result))
+        if previous:
+            report.previous_investigation_id = previous
+            evidence_store.append_custody(
+                db, case_id, "revised", timestamp, {"previous_investigation_id": previous}
+            )
         db.execute(
             "UPDATE investigations SET report = ? WHERE id = ?",
             (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
         )
         return case_id
+
+    def revise(self, case_id: str, supplement: EvidenceSubmission) -> InvestigationReport:
+        if not supplement.records:
+            raise ValueError("A revision requires supplemental records.")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT report FROM investigations WHERE id = ?", (case_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("Investigation not found.")
+            previous = deserialize_report(row["report"])
+            status = evidence_store.verify(db, case_id, previous.evidence, previous.correlation)
+            if not status.valid or status.expired_raw:
+                raise ValueError("A revision requires intact original raw evidence and custody.")
+            records = evidence_store.original_records(db, case_id)
+            origins = tuple(evidence_store.receipts(db, case_id))
+            request = InvestigationRequest(
+                title=previous.title,
+                principal=previous.principal,
+                records=[*records, *supplement.records],
+                provenance=supplement.provenance,
+            )
+            revised = self.create_in_transaction(db, request, previous=case_id, inherited=origins)
+        return self.get(revised)
 
     def verify_evidence(self, case_id: str) -> EvidenceIntegrity:
         with self.connect() as db:
@@ -97,7 +140,7 @@ class Store:
             raise NotFoundError("Investigation not found.")
         try:
             report = InvestigationReport.model_validate_json(row["report"])
-            result = evidence_store.verify(db, case_id, report.evidence)
+            result = evidence_store.verify(db, case_id, report.evidence, report.correlation)
         except (ValueError, TypeError):
             return EvidenceIntegrity(
                 raw_checked=0,

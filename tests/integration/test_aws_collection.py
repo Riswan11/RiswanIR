@@ -9,6 +9,7 @@ from botocore.stub import Stubber
 
 from sentinelforge.connectors import registry
 from sentinelforge.connectors.aws.authentication import log_prefix
+from sentinelforge.evidence.redaction import redact_record
 from sentinelforge.ingestion.orchestrator import run_collection
 
 
@@ -29,7 +30,7 @@ def test_moto_s3_collection_reaches_custody(store, s3_config, aws_window, cloudt
     assert result.error is None and result.persisted == 1 and result.requests == 3
     report = store.list()[0]
     exported = store.export_evidence(report.id)
-    assert exported["raw_evidence"][0]["record"] == event
+    assert exported["raw_evidence"][0]["record"] == redact_record(event)
     provenance = exported["provenance"][0]
     assert provenance["source_location"] == f"s3://{s3_config.s3.bucket}/{key}"
     assert provenance["collection_method"] == "connector"
@@ -58,5 +59,5 @@ def test_both_sources_dispatch_through_registry_and_persist(
     assert len(store.list()) == 2
     for summary in store.list():
         bundle = store.export_evidence(summary.id)
-        assert bundle["raw_evidence"][0]["record"] == event
+        assert bundle["raw_evidence"][0]["record"] == redact_record(event)
         assert bundle["provenance"][0]["collection_method"] == "connector"

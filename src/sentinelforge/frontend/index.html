@@ -99,7 +99,18 @@ function render(report) {
     add(entry, "div", `Principal: ${item.principal ?? "Unavailable"} · Target: ${item.target ?? "Unavailable"}`);
     add(entry, "div", `Source IP: ${item.source_ip ?? "Unavailable"} · Region: ${item.region ?? "Unavailable"} · Caller account: ${item.account_id ?? "Unavailable"} · Recipient account: ${item.recipient_account_id ?? "Unavailable"}`);
     add(entry, "div", `User agent: ${item.user_agent ?? "Unavailable"}`);
-    if (item.linked_from_evidence_id) add(entry, "div", `Credential issued in event ${item.linked_from_evidence_id}`);
+    if (item.linked_from_evidence_id) add(entry, "div", `${item.query} · Event ${item.linked_from_evidence_id}`);
+  }
+  if (report.previous_investigation_id) add(panel, "p", `Revision of investigation ${report.previous_investigation_id}`);
+  if (report.correlation) {
+    const correlation = report.correlation;
+    const details = add(panel, "details", "");
+    add(details, "summary", "Identity and session correlation");
+    list(details, "Activity chains", correlation.chains.map(chain => chain.event_ids.join(" → ")));
+    list(details, "Session links", correlation.relationships
+      .filter(edge => edge.relationship === "CHAINED_TO")
+      .map(edge => `${edge.confidence} · ${edge.reason} [${edge.evidence_ids.join(", ")}]`));
+    if (correlation.unresolved.length) list(details, "Unresolved attribution", correlation.unresolved);
   }
   list(panel, "Open questions", risk.open_questions);
   list(panel, "Related reviewed investigations", report.similar_investigations.map(item =>

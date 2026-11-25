@@ -10,7 +10,9 @@ from .base import DomainModel, Timestamp
 class ChainOfCustodyEntry(DomainModel):
     investigation_id: str
     sequence: int
-    action: Literal["ingested", "normalized", "verified", "export_prepared", "raw_expired"]
+    action: Literal[
+        "ingested", "normalized", "verified", "export_prepared", "raw_expired", "revised"
+    ]
     actor: Literal["local_application", "local_operator"]
     recorded_at: Timestamp
     previous_hash: str | None

@@ -170,7 +170,10 @@ def normalize_batch(payload: object) -> NormalizationBatch[PreparedEvent]:
 def issued_credential(event: CloudTrailRecord, item: SecurityEvent) -> IssuedCredential:
     response = mapping(event, "responseElements")
     source = (text_field(event, "eventSource") or "").lower()
-    if item.event == "AssumeRole" and source in ("", "sts.amazonaws.com"):
+    if item.event in ("AssumeRole", "GetFederationToken", "GetSessionToken") and source in (
+        "",
+        "sts.amazonaws.com",
+    ):
         credentials = mapping(response, "credentials")
         expiry = text_field(credentials, "expiration")
         expires_at = None
@@ -184,9 +187,15 @@ def issued_credential(event: CloudTrailRecord, item: SecurityEvent) -> IssuedCre
                     )
                 except (ValueError, OverflowError):
                     pass
+        session_field = "federatedUser" if item.event == "GetFederationToken" else "assumedRoleUser"
+        session_arn = (
+            item.principal
+            if item.event == "GetSessionToken"
+            else text_field(mapping(response, session_field), "arn")
+        )
         return (
             text_field(credentials, "accessKeyId"),
-            text_field(mapping(response, "assumedRoleUser"), "arn"),
+            session_arn,
             expires_at,
         )
     if item.event == "CreateAccessKey" and source in ("", "iam.amazonaws.com"):

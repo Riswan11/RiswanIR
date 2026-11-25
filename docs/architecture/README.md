@@ -8,5 +8,6 @@ Start with the [system overview](overview.md).
 - [CloudTrail normalization](cloudtrail-normalization.md)
 - [Evidence custody and forensic export](evidence-custody.md)
 - [Read-only AWS collection](aws-collection.md)
+- [Identity and session correlation](identity-correlation.md)
 - [Architecture decisions](../adr/README.md)
 - [Threat model](../security/threat-model.md)
