@@ -10,6 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.11,<3", "boto3>=1.40,<2", "PyYAML>=6.0.2,<7", "PyJWT>=2.10,<3"]
 
+[project.urls]
+Homepage = "https://riswanlabs.com/products/ir"
+Repository = "https://github.com/riswan-labs/RiswanIR"
+Issues = "https://github.com/riswan-labs/RiswanIR/issues"
+Security = "https://github.com/riswan-labs/RiswanIR/security"
+
 [project.optional-dependencies]
 identity = ["PyJWT[crypto]>=2.10,<3"]
 test = [

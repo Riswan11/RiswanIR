@@ -1,5 +1,7 @@
 # Riswan IR
 
+[![CI](https://github.com/riswan-labs/RiswanIR/actions/workflows/ci.yml/badge.svg)](https://github.com/riswan-labs/RiswanIR/actions/workflows/ci.yml)
+
 Riswan IR is the flagship incident response product from Riswan Labs. Its local analyst workspace is for investigating suspicious AWS activity from supplied CloudTrail records. It links triage findings to evidence, reconstructs a timeline, and preserves analyst decisions for future investigations.
 
 
