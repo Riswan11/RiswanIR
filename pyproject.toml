@@ -17,6 +17,7 @@ Issues = "https://github.com/riswan-labs/RiswanIR/issues"
 Security = "https://github.com/riswan-labs/RiswanIR/security"
 
 [project.optional-dependencies]
+postgres = ["psycopg[binary,pool]>=3.2,<4"]
 aws = ["boto3>=1.40,<2"]
 azure = ["azure-identity>=1.19,<2", "azure-keyvault-secrets>=4.9,<5", "azure-keyvault-keys>=4.10,<5"]
 gcp = ["google-auth[requests]>=2.38,<3", "google-cloud-secret-manager>=2.23,<3", "google-cloud-kms>=3.2,<4"]
@@ -44,6 +45,7 @@ sentinelforge-detect = "riswan_ir.detection.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"riswan_app" = ["migrations/*.sql"]
 "riswan_ir.frontend" = ["index.html", "*.svg"]
 "riswan_ir.detection" = ["aws-rules.yml"]
 "riswan_ir.correlation.temporal" = ["aws-rules.yml"]

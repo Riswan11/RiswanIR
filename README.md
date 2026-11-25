@@ -130,3 +130,5 @@ See [centralized authentication](docs/architecture/authentication.md) for OIDC c
 ## Secrets and credentials
 
 [Architecture and lifecycle](docs/architecture/secrets-management.md) ? [Configuration and operations](docs/operations/secrets-configuration.md) ? [Threat model](docs/security/secrets-threat-model.md)
+
+[Data protection and tenant isolation notes](docs/architecture/data-protection.md)

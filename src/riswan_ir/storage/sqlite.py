@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from riswan_platform.core.context import require_context
+from riswan_platform.core.exceptions import ContextRequiredError
 from riswan_security_data.provenance import EvidenceProvenance
 
 from ..core.config import setting
@@ -138,6 +139,8 @@ class Store:
                 + risk_repository.SCHEMA
                 + memory_repository.SCHEMA
             )
+            db.execute("BEGIN IMMEDIATE")
+            evidence_store.split_owned_payloads(db)
 
     @contextmanager
     def connect(self):
@@ -145,6 +148,45 @@ class Store:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys = ON")
             yield db
+
+    def _tenant(self) -> UUID:
+        context = require_context()
+        if context.product_id != "ir":
+            raise ContextRequiredError("Invalid product scope.")
+        return context.tenant_id
+
+    def _require_case(self, db: sqlite3.Connection, case_id: str) -> None:
+        expected = str(self._tenant()) if self.hosted else None
+        row = db.execute(
+            "SELECT tenant_id FROM investigation_ownership WHERE investigation_id = ?",
+            (case_id,),
+        ).fetchone()
+        if (row[0] if row else None) != expected:
+            raise NotFoundError("Investigation not found.")
+
+    def _related(
+        self, db: sqlite3.Connection, ids: tuple[str, ...] | None
+    ) -> tuple[str, ...] | None:
+        if not self.hosted:
+            if ids is None:
+                return None
+            return tuple(
+                row[0]
+                for row in db.execute(
+                    """SELECT i.id FROM investigations i LEFT JOIN investigation_ownership o
+                ON o.investigation_id = i.id
+                WHERE o.tenant_id IS NULL AND i.id IN (SELECT value FROM json_each(?))""",
+                    (json.dumps(ids),),
+                )
+            )
+        return tuple(
+            row[0]
+            for row in db.execute(
+                """SELECT investigation_id FROM investigation_ownership
+                WHERE tenant_id = ? AND investigation_id IN (SELECT value FROM json_each(?))""",
+                (str(self._tenant()), json.dumps(ids or ())),
+            )
+        )
 
     def create(self, request: InvestigationRequest) -> InvestigationReport:
         with self.connect() as db:
@@ -159,6 +201,10 @@ class Store:
         previous: str | None = None,
         inherited: tuple[EvidenceProvenance, ...] = (),
     ) -> str:
+        if self.hosted:
+            self._tenant()
+            if previous:
+                self._require_case(db, previous)
         request = request.model_copy(
             update={"records": [redact_record(record) for record in request.records]}
         )
@@ -271,6 +317,7 @@ class Store:
     def memory_index(self, case_id: str) -> bool:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             return self._index_memory_case(db, case_id, memory_policy(), now())
 
     def memory_intelligence(
@@ -278,6 +325,7 @@ class Store:
     ) -> Intelligence:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             self._stored_case(db, case_id)
             timestamp = now()
             live = memory_policy()
@@ -292,21 +340,25 @@ class Store:
                 as_of or timestamp,
                 timestamp,
                 authorization=live,
-                case_ids=case_ids,
+                case_ids=self._related(db, case_ids),
             )
 
     def memory_feedback(self, case_id: str, feedback: MemoryFeedback) -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             promote(db, self._stored_case(db, case_id), feedback, memory_policy(), now())
 
     def memory_remove(self, case_id: str) -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             self._stored_case(db, case_id)
             memory_repository.remove(db, case_id, memory_policy(), now())
 
     def memory_expire(self) -> int:
+        if self.hosted:
+            raise ContextRequiredError("Hosted storage requires a scoped operation.")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             return memory_repository.expire(db, memory_policy(), now())
@@ -356,6 +408,7 @@ class Store:
     def reassess_risk(self, case_id: str, request: Reassessment) -> Assessment:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             result = self._score_existing_risk(db, case_id, now(), "reassessment", request)
             if result is None:
                 raise NotFoundError("Risk subject not found.")
@@ -371,6 +424,7 @@ class Store:
         scoped: bool = False,
     ) -> list[Assessment]:
         with self.connect() as db:
+            self._require_case(db, case_id)
             case = db.execute("SELECT 1 FROM investigations WHERE id = ?", (case_id,)).fetchone()
             if case is None:
                 raise NotFoundError("Investigation not found.")
@@ -381,6 +435,7 @@ class Store:
         self, case_id: str, assessment_id: str, *, replay: bool = False, scoped: bool = False
     ) -> Assessment:
         with self.connect() as db:
+            self._require_case(db, case_id)
             get = risk_repository.scoped_get if scoped else risk_repository.get
             archive = get(db, case_id, assessment_id)
             if archive is None:
@@ -394,6 +449,8 @@ class Store:
                     "SELECT investigation_id FROM risk_assessments WHERE id = ? AND kind = ? AND subject_id = ?",
                     (item.original_assessment_id, item.subject_kind, item.subject_id),
                 ).fetchone()
+                if row is not None:
+                    self._require_case(db, row["investigation_id"])
                 origin = (
                     risk_repository.get(db, row["investigation_id"], item.original_assessment_id)
                     if row
@@ -426,6 +483,7 @@ class Store:
 
     def temporal_result(self, case_id: str) -> TemporalResult:
         with self.connect() as db:
+            self._require_case(db, case_id)
             snapshot = temporal_repository.load(db, case_id)
         return snapshot.result if snapshot else self.replay_temporal(case_id)
 
@@ -434,6 +492,7 @@ class Store:
     ) -> TemporalResult:
         with self.connect() as db:
             db.execute("BEGIN")
+            self._require_case(db, case_id)
             row = db.execute(
                 "SELECT report FROM investigations WHERE id = ?", (case_id,)
             ).fetchone()
@@ -464,6 +523,7 @@ class Store:
 
     def security_graph(self, investigation_id: str) -> SecurityGraph:
         with self.connect() as db:
+            self._require_case(db, investigation_id)
             graph = SQLiteGraphRepository(db).get(investigation_id)
         return graph if graph is not None else build_security_graph(self.get(investigation_id))
 
@@ -476,6 +536,7 @@ class Store:
     ) -> DetectionReplayResult:
         with self.connect() as db:
             db.execute("BEGIN")
+            self._require_case(db, case_id)
             row = db.execute(
                 "SELECT report FROM investigations WHERE id = ?", (case_id,)
             ).fetchone()
@@ -528,6 +589,7 @@ class Store:
             raise ValueError("A revision requires supplemental records.")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             row = db.execute(
                 "SELECT report FROM investigations WHERE id = ?", (case_id,)
             ).fetchone()
@@ -551,6 +613,7 @@ class Store:
     def verify_evidence(self, case_id: str) -> EvidenceIntegrity:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             return self._verify_evidence(db, case_id)
 
     def _verify_evidence(self, db: sqlite3.Connection, case_id: str) -> EvidenceIntegrity:
@@ -575,6 +638,7 @@ class Store:
     def export_evidence(self, case_id: str) -> dict[str, object]:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
             verification = self._verify_evidence(db, case_id)
             if verification.valid:
                 evidence_store.append_custody(
@@ -604,6 +668,8 @@ class Store:
     def expire_evidence(
         self, policy: EvidenceRetentionPolicy, timestamp: datetime | None = None
     ) -> int:
+        if self.hosted:
+            raise ContextRequiredError("Hosted storage requires a scoped operation.")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             return evidence_store.expire(db, policy, timestamp or utc_timestamp(now()))
@@ -612,6 +678,7 @@ class Store:
         self, investigation_id: str, *, related_ids: tuple[str, ...] | None = None
     ) -> InvestigationReport:
         with self.connect() as db:
+            self._require_case(db, investigation_id)
             row = db.execute(
                 "SELECT report FROM investigations WHERE id = ?", (investigation_id,)
             ).fetchone()
@@ -631,17 +698,20 @@ class Store:
             ).fetchone()
             report.decision = ActionDecision.model_validate(dict(decision)) if decision else None
             moment = memory_repository.time_key(now())
+            related_ids = self._related(db, related_ids)
             authorized = json.dumps(related_ids) if related_ids is not None else None
             history = db.execute(
                 """
                 SELECT i.report, r.disposition FROM investigations i JOIN reviews r
                     ON r.id = (SELECT max(id) FROM reviews WHERE investigation_id = i.id)
                 WHERE i.id <> ?
+                AND (? IS NOT NULL OR NOT EXISTS
+                     (SELECT 1 FROM investigation_ownership o WHERE o.investigation_id = i.id))
                 AND (? IS NULL OR i.id IN (SELECT value FROM json_each(?)))
                 AND NOT EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.case_id = i.id)
                 AND NOT EXISTS (
-                    SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
-                    WHERE e.investigation_id = i.id AND p.raw_id IS NULL
+                    SELECT 1 FROM case_evidence_payloads e
+                    WHERE e.investigation_id = i.id AND e.payload IS NULL
                 )
                 AND (
                     NOT EXISTS (SELECT 1 FROM memory_cases m WHERE m.case_id = i.id)
@@ -654,7 +724,7 @@ class Store:
                 )
                 ORDER BY r.id DESC LIMIT 100
             """,
-                (investigation_id, authorized, authorized, moment, moment),
+                (investigation_id, authorized, authorized, authorized, moment, moment),
             )
             config = memory_policy()
             current_scope = self._legacy_memory_scope(report)
@@ -695,6 +765,8 @@ class Store:
         return sorted(accounts)
 
     def owned_investigations(self, tenant_id: UUID) -> dict[str, UUID]:
+        if not self.hosted or self._tenant() != tenant_id:
+            raise ContextRequiredError("Invalid hosted tenant scope.")
         with self.connect() as db:
             return {
                 row[0]: UUID(row[1])
@@ -706,6 +778,7 @@ class Store:
 
     def list_scoped(self, ids: tuple[str, ...]) -> list[InvestigationSummary]:
         with self.connect() as db:
+            ids = self._related(db, ids) or ()
             rows = db.execute(
                 "SELECT report FROM investigations WHERE id IN (SELECT value FROM json_each(?)) "
                 "ORDER BY created_at DESC, id DESC LIMIT 50",
@@ -714,16 +787,21 @@ class Store:
             return [InvestigationSummary.model_validate_json(row["report"]) for row in rows]
 
     def list(self) -> list[InvestigationSummary]:
+        if self.hosted:
+            raise ContextRequiredError("Hosted storage requires a scoped operation.")
         with self.connect() as db:
             return [
                 InvestigationSummary.model_validate_json(row["report"])
                 for row in db.execute(
-                    "SELECT report FROM investigations ORDER BY created_at DESC LIMIT 50"
+                    """SELECT report FROM investigations
+                    WHERE NOT EXISTS (SELECT 1 FROM investigation_ownership o WHERE o.investigation_id = investigations.id)
+                    ORDER BY created_at DESC LIMIT 50"""
                 )
             ]
 
     def evidence_ids(self, case_id: str, *, raw: bool = False) -> tuple[str, ...]:
         with self.connect() as db:
+            self._require_case(db, case_id)
             if raw:
                 return tuple(
                     f"raw/{row.evidence_id}" for row in evidence_store.receipts(db, case_id)
@@ -732,6 +810,7 @@ class Store:
 
     def get_summary(self, investigation_id: str) -> InvestigationSummary:
         with self.connect() as db:
+            self._require_case(db, investigation_id)
             row = db.execute(
                 "SELECT report FROM investigations WHERE id = ?", (investigation_id,)
             ).fetchone()
@@ -743,6 +822,7 @@ class Store:
         self.get_summary(investigation_id)
         review = AnalystReview(**dict(feedback), created_at=now())
         with self.connect() as db:
+            self._require_case(db, investigation_id)
             db.execute(
                 "INSERT INTO reviews (investigation_id, reviewer, disposition, notes, created_at) VALUES (?, ?, ?, ?, ?)",
                 (
@@ -774,6 +854,7 @@ class Store:
         if action is None or action.id != action_id:
             raise NotFoundError("Action not found.")
         with self.connect() as db:
+            self._require_case(db, investigation_id)
             result = db.execute(
                 "INSERT INTO decisions VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 (investigation_id, decision.reviewer, decision.decision, decision.created_at),

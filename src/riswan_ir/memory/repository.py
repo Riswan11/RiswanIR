@@ -301,7 +301,11 @@ def candidates(
     rows = db.execute(
         """SELECT c.case_id FROM memory_cases c
         WHERE c.indexed_at BETWEEN ? AND ?
-        AND (? IS NULL OR c.case_id IN (SELECT value FROM json_each(?)))
+        AND (
+          (? IS NULL AND NOT EXISTS
+            (SELECT 1 FROM investigation_ownership o WHERE o.investigation_id = c.case_id))
+          OR c.case_id IN (SELECT value FROM json_each(?))
+        )
         AND EXISTS (SELECT 1 FROM memory_accounts a WHERE a.case_id = c.case_id AND a.account IN (SELECT value FROM json_each(?)))
         AND NOT EXISTS (SELECT 1 FROM memory_accounts a WHERE a.case_id = c.case_id AND a.account NOT IN (SELECT value FROM json_each(?)))
         AND NOT EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.case_id = c.case_id)

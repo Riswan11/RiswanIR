@@ -84,12 +84,12 @@ class HostedProduct:
             context = self.tenancy.context_for(principal, tenant_id, "ir", request_id)
             if context is None:
                 raise AccessDenied
-            resources = IRResources(self.store, tenant_id)
-            guard = Enforcement(
-                self.tenancy.evaluator, resources, self.tenancy.authorization.transaction
-            )
-            app = Application(
-                self.store, product=IRProduct(), tenant_id=tenant_id, enforcement=guard
-            )
             with bind_context(context):
+                resources = IRResources(self.store, tenant_id)
+                guard = Enforcement(
+                    self.tenancy.evaluator, resources, self.tenancy.authorization.transaction
+                )
+                app = Application(
+                    self.store, product=IRProduct(), tenant_id=tenant_id, enforcement=guard
+                )
                 return app.route(env)

@@ -377,7 +377,14 @@ def test_tenant_routing_enforces_membership_and_case_ownership(hosted_runtime, r
     assert request(org + "/members/" + bob_id, "DELETE")[0] == 204
     assert request(case, tenant=first, cookie=bob)[0] == 404
     assert request(cases, tenant=second, cookie=bob) == (200, [])
-    assert storage.owned_investigations(UUID(first)).keys() >= {result["id"]}
+    with storage.connect() as db:
+        assert (
+            db.execute(
+                "SELECT tenant_id FROM investigation_ownership WHERE investigation_id = ?",
+                (result["id"],),
+            ).fetchone()[0]
+            == first
+        )
     assert request(org + "/lifecycle", "POST", payload={"status": "suspended"})[0] == 200
     assert request(case, tenant=first)[0] == 404
     assert request(org + "/activate", "POST")[0] == 404
@@ -731,7 +738,13 @@ def test_hosted_aws_collection_uses_registered_workload_and_preserves_ownership(
     issue.assert_called_once()
     listing = call(app, "/v1/investigations", cookie=alice, tenant=tenant)[2]
     assert len(listing) == 1
-    assert store.owned_investigations(UUID(tenant))[listing[0]["id"]] == UUID(worker)
+    with store.connect() as db:
+        assert tuple(
+            db.execute(
+                "SELECT tenant_id, creator_id FROM investigation_ownership WHERE investigation_id = ?",
+                (listing[0]["id"],),
+            ).fetchone()
+        ) == (tenant, worker)
     assert (
         call(app, org_path + "/members/" + worker, "DELETE", cookie=alice, origin=settings.origin)[
             0
