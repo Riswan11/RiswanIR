@@ -68,3 +68,12 @@ Use the [risk register](risk-register.md) for owners and review triggers, and th
 | Information disclosure | Another local user reads account inventory or approved network ranges from the case database. | Medium | Medium | Medium | Inventory stays out of API responses and execution logs. SQLite relies on restricted filesystem access. | Medium. Elevated local readers retain access. |
 | Denial of service | Large rules or high-fanout telemetry exhaust detection memory. | Medium | Medium | Medium | YAML, rule, event, grouping-window and result bounds. Excess results fail the case transaction. | Low to medium. Per-case limits do not rate-limit repeated local submissions. |
 | Elevation of privilege | A rule tries to access arbitrary objects or execute code. | Low | High | Medium | Safe YAML loader and fixed field and operator allowlists. Findings are advisory. | Low. Dependencies and future operators require review. |
+
+## Security graph
+
+| STRIDE | Scenario | Existing control | Residual risk |
+| --- | --- | --- | --- |
+| Tampering | A forged event or altered graph snapshot misstates a relationship. | Canonical event and correlation inputs, directional validation, case-local observation IDs and source/time validation. | The local database writer can alter records. The graph is a derived index rather than an independent source attestation. |
+| Information disclosure | A relationship lookup returns a different case, or an account view includes unrelated observations. | The repository reads by investigation ID. Account views filter nodes and supporting observation events by account and partition. | Local clients can open other cases using this single-operator API. Case IDs are not authorization credentials. |
+| Denial of service | Large traversals or high fanout overwhelm the local service. | Graph construction bounds nodes and observations. Graph queries limit request width, depth and returned entries. | Repeated local requests may still consume resources. |
+| Elevation of privilege | An advisory graph relationship is interpreted as permission to execute remediation. | Graph API is read-only and action states reflect the separate analyst decision workflow. | Downstream tooling must preserve the advisory boundary. |

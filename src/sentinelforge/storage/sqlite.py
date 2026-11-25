@@ -15,6 +15,11 @@ from ..detection.engine import evaluate
 from ..detection.registry import RuleRegistry, default_registry
 from ..evidence.redaction import redact_record
 from ..investigation.analysis import analyze
+from ..knowledge_graph.builder import build_security_graph
+from ..knowledge_graph.models import SecurityGraph
+from ..knowledge_graph.ontology import Entity
+from ..knowledge_graph.repository import SCHEMA as GRAPH_SCHEMA
+from ..knowledge_graph.repository import SQLiteGraphRepository
 from ..memory.similarity import similar_investigations
 from ..models import (
     ActionDecision,
@@ -90,7 +95,9 @@ class Store:
             except FileExistsError:
                 pass
         with self.connect() as db:
-            db.executescript(SCHEMA + evidence_store.EVIDENCE_SCHEMA + checkpoint_store.SCHEMA)
+            db.executescript(
+                SCHEMA + evidence_store.EVIDENCE_SCHEMA + checkpoint_store.SCHEMA + GRAPH_SCHEMA
+            )
 
     @contextmanager
     def connect(self):
@@ -139,7 +146,13 @@ class Store:
             "UPDATE investigations SET report = ? WHERE id = ?",
             (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
         )
+        SQLiteGraphRepository(db).save(build_security_graph(report))
         return case_id
+
+    def security_graph(self, investigation_id: str) -> SecurityGraph:
+        with self.connect() as db:
+            graph = SQLiteGraphRepository(db).get(investigation_id)
+        return graph if graph is not None else build_security_graph(self.get(investigation_id))
 
     def replay_detection(
         self,
@@ -357,4 +370,12 @@ class Store:
             )
             if result.rowcount != 1:
                 raise FileExistsError("This action already has a decision.")
+            repository = SQLiteGraphRepository(db)
+            graph = repository.get(investigation_id)
+            if graph is not None:
+                for node in graph.nodes:
+                    if node.kind == Entity.ACTION and node.key == action_id:
+                        node.metadata["status"] = decision.decision.value
+                        node.metadata["decision_at"] = decision.created_at
+                repository.save(graph)
         return self.get(investigation_id)
