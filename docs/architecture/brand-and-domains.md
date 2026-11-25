@@ -42,4 +42,4 @@ Check text and controls against their actual background for WCAG 2.2 AA. Use dar
 
 Registrar controls include MFA, verified registration contacts, automatic renewal, transfer lock, privacy where supported, and DNSSEC after DNS provider coordination. Verify these in the registrar account. Configure hosting, TLS, redirects and DNS with the deployment task. Create DNS records only after their targets are provisioned and validated.
 
-The temporary GitHub home is `Riswan11/RiswanIR`. The planned destination is `riswan-labs/RiswanIR`. Runtime code does not use the repository owner.
+Riswan Labs maintains the project at `riswan-labs/RiswanIR`. The repository was transferred from `Riswan11/RiswanIR` with its history intact. Runtime code does not use the repository owner.

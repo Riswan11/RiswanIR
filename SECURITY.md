@@ -1,6 +1,6 @@
 # Security policy
 
-Report suspected vulnerabilities privately to the repository owner. When private vulnerability reporting is enabled, use the repository’s **Security** tab. Include the affected version, impact, and a minimal reproduction using synthetic data. Keep credentials and real CloudTrail records out of reports and public issues.
+Report suspected vulnerabilities privately to security@riswanlabs.com. When private vulnerability reporting is enabled, use the repository’s **Security** tab. Include the affected version, impact, and a minimal reproduction using synthetic data. Keep credentials and real CloudTrail records out of reports and public issues.
 
 See the [STRIDE threat model](docs/security/threat-model.md), [security controls](docs/security/security-controls.md), and [risk register](docs/security/risk-register.md).
 
