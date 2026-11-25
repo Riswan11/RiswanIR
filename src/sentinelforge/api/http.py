@@ -9,6 +9,7 @@ from importlib.resources import files
 from .. import frontend
 from ..core.errors import NotFoundError
 from ..core.fields import now
+from ..knowledge_graph.service import serve_graph
 from ..models import (
     ActionDecision,
     AnalystFeedback,
@@ -94,6 +95,15 @@ class Application:
         match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
         if match:
             investigation_id, suffix = match.groups()
+            if method == "GET" and (
+                suffix == "/knowledge-graph" or suffix.startswith("/knowledge-graph/")
+            ):
+                return 200, serve_graph(
+                    self.store,
+                    investigation_id,
+                    suffix.removeprefix("/knowledge-graph"),
+                    env.get("QUERY_STRING", ""),
+                )
             if method == "GET" and suffix in {"", "/evidence", "/graph"}:
                 report = self.store.get(investigation_id).payload()
                 return 200, report[suffix[1:]] if suffix else report

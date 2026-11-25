@@ -15,3 +15,5 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0011 OCSF-aligned canonical events](0011-ocsf-aligned-events.md)
 
 - [0012. Evaluate versioned rules over canonical events](0012-context-aware-detection.md)
+
+- [0013. Store versioned investigation graph snapshots in SQLite](0013-security-knowledge-graph.md)

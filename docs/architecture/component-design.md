@@ -32,3 +32,7 @@ The storage layer supplies trusted policy and a rule registry, then archives the
 configuration alongside the report. Raw request details remain with evidence custody. The
 canonical extension carries selected typed results rather than copying policy documents.
 See [detection architecture](../detection/overview.md).
+
+## Security knowledge graph
+
+The case store builds an ontology-validated snapshot from canonical events, correlation, findings, evidence and advisory actions. The repository manages case-scoped persistence and the graph service exposes bounded queries. See [security knowledge graph](security-knowledge-graph.md).

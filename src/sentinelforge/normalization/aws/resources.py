@@ -4,7 +4,16 @@ from ...models.network import TLSDetails
 from ...models.resource import CloudResource, PayloadSummary
 from .validation import cloud_bool, identifier
 
-REQUEST_FIELDS = ("roleArn", "policyArn", "userName", "bucketName", "vpcId", "groupId", "keyId")
+REQUEST_FIELDS = (
+    "roleArn",
+    "roleName",
+    "policyArn",
+    "userName",
+    "bucketName",
+    "vpcId",
+    "groupId",
+    "keyId",
+)
 RESPONSE_FIELDS = ("ConsoleLogin",)
 ADDITIONAL_FLAGS = ("MFAUsed", "MobileVersion")
 
