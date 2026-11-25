@@ -86,3 +86,12 @@ Use the [risk register](risk-register.md) for owners and review triggers, and th
 | Information disclosure | Traversal joins unrelated accounts or cases. | Case-scoped repositories and graph edges, scoped attribution, and a directional operator allowlist for cross-account paths. | Filesystem access and the single-operator service remain the trust boundary. |
 | Denial of service | Candidate expansion exhausts memory or CPU. | Limits on events, YAML, stages, live states, graph traversal, and retained results with truncation metrics. | Heavy or repeated local requests may delay analysis. |
 | Elevation of privilege | A candidate is used to justify automated remediation. | Incident API is read-only and recommendations are advisory. | Downstream consumers must preserve analyst review. |
+
+## Risk assessment
+
+| STRIDE | Threat | Existing control | Residual risk |
+| --- | --- | --- | --- |
+| Tampering | A client supplies scores, changes policy, or asserts unsupported containment. | Typed requests reject score overrides, policy is loaded from trusted local files, and containment must cite verified same-case evidence. | An operator with filesystem privileges can alter policy or SQLite. |
+| Information disclosure | Assessment IDs or evidence references reveal another investigation. | Case-scoped repository reads and subject validation. | Local single-operator access is the authorization boundary. |
+| Repudiation | Reassessment conceals the original decision basis. | Append-only history preserves exact factor inputs, policy, original references, and trigger. | No external immutable archive. |
+| Spoofing | Valid hashes are mistaken for proof of origin. | Integrity and source corroboration have separate inputs and explanations. | Imported CloudTrail remains unauthenticated unless supported by provenance. |

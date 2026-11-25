@@ -93,3 +93,5 @@ python -m bandit -r src -ll
 ```
 
 GitHub branch protection requires pull requests and the five checks above. Workflow dependencies use full commit SHAs. The standalone scanner installer verifies release archive checksums.
+
+See [risk and confidence scoring](docs/detection/risk-scoring.md) for assessment factors, priority, reassessment, and replay.

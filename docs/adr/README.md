@@ -19,3 +19,5 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0013. Store versioned investigation graph snapshots in SQLite](0013-security-knowledge-graph.md)
 
 - [0014. Correlate event-time sequences within case revisions](0014-temporal-correlation.md)
+
+- [0015. Preserve independent risk and confidence assessments](0015-risk-assessment-history.md)
