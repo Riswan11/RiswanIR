@@ -14,6 +14,19 @@ jobs:
     name: Tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: riswan
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d riswan"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -21,8 +34,10 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-      - run: python -m pip install ".[test]"
-      - name: Run architecture, contract, and application tests
+      - run: python -m pip install ".[test,postgres]"
+      - name: Run architecture, contract, PostgreSQL isolation, and application tests
+        env:
+          RISWAN_POSTGRES_INTEGRATION: "1"
         run: |
           mkdir -p reports
           python -m pytest tests/ -v --junitxml=reports/pytest.xml -o junit_family=xunit1 --cov \
@@ -92,32 +107,3 @@ jobs:
             azure) python -c "from azure.identity import WorkloadIdentityCredential; from azure.keyvault.keys.crypto import CryptographyClient; from azure.keyvault.secrets import SecretClient" ;;
             gcp) python -c "from google.auth import identity_pool; from google.cloud import kms, secretmanager" ;;
           esac
-
-  postgres-isolation:
-    name: PostgreSQL isolation
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: riswan
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d riswan"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.11"
-      - run: python -m pip install ".[test,postgres]"
-      - run: python -m pytest tests/integration/test_postgres_objects.py -v
-        env:
-          RISWAN_POSTGRES_INTEGRATION: "1"
