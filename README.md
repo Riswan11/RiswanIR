@@ -40,6 +40,13 @@ After installation, you can also start the app with `sentinelforge` or `python -
 
 This release is for single-user local testing. It uses Pydantic for validation and SQLite for persistence, accepts exported records, and records advisory decisions only. Live AWS collection, cloud remediation, authenticated multi-user access, and model-based planning are outside this release.
 
+## Technical documentation
+
+- [Architecture and diagrams](docs/architecture/README.md)
+- [Architecture decision records](docs/adr/README.md)
+- [STRIDE threat model](docs/security/threat-model.md), [trust boundaries](docs/security/trust-boundaries.md), [security controls](docs/security/security-controls.md), [risk register](docs/security/risk-register.md), and [data classification](docs/security/data-classification.md)
+- [Testing strategy](docs/engineering/testing-strategy.md), [CI strategy](docs/engineering/ci-cd-strategy.md), [development guidelines](docs/engineering/development-guidelines.md), and [technical debt](docs/engineering/technical-debt.md)
+
 ## Tests
 
 Install the test dependencies and run the full suite with branch coverage.
