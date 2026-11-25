@@ -3,15 +3,20 @@
 from collections.abc import Iterable
 
 from ..models import Disposition, InvestigationReport, SimilarInvestigation
+from ..models.security_event import Outcome
 
 
 def similar_investigations(
     report: InvestigationReport, history: Iterable[tuple[InvestigationReport, Disposition]]
 ) -> list[SimilarInvestigation]:
-    events = {item.event for item in report.evidence}
+    events = {item.event for item in report.evidence if item.outcome == Outcome.SUCCESS}
     similar = []
     for prior, disposition in history:
-        shared = sorted(events.intersection(event.event for event in prior.evidence))
+        shared = sorted(
+            events.intersection(
+                event.event for event in prior.evidence if event.outcome == Outcome.SUCCESS
+            )
+        )
         if shared:
             similar.append(
                 SimilarInvestigation(

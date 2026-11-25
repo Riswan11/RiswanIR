@@ -95,6 +95,7 @@ function render(report) {
   for (const item of report.evidence) {
     const entry = add(timeline, "li", "");
     add(entry, "strong", `${item.observed_at} · ${item.operation ?? item.event} [${item.id}]`);
+    if (item.outcome) add(entry, "div", `Outcome: ${item.outcome}${item.error_code ? " · " + item.error_code : ""}`);
     add(entry, "div", `Principal: ${item.principal ?? "Unavailable"} · Target: ${item.target ?? "Unavailable"}`);
     add(entry, "div", `Source IP: ${item.source_ip ?? "Unavailable"} · Region: ${item.region ?? "Unavailable"} · Caller account: ${item.account_id ?? "Unavailable"} · Recipient account: ${item.recipient_account_id ?? "Unavailable"}`);
     add(entry, "div", `User agent: ${item.user_agent ?? "Unavailable"}`);

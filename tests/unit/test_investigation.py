@@ -77,7 +77,9 @@ class CorrelationTests(unittest.TestCase):
                 record("used", 11, "GetObject", SESSION, KEY),
             ]
         )
-        self.assertEqual(result["evidence"], [])
+        self.assertEqual([item["id"] for item in result["evidence"]], ["denied"])
+        self.assertEqual(result["evidence"][0]["outcome"], "failure")
+        self.assertEqual(result["assessment"]["score"], 0)
 
     def test_malformed_exports_and_lookup_wrapper(self):
         valid = record("valid", 10, "AssumeRole")
