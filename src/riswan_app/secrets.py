@@ -380,7 +380,14 @@ class Secrets:
                 item.expires_at and item.expires_at <= now
             ):
                 raise AccessDenied
-            item = item.model_copy(update={**dict(update), "updated_at": now})
+            changed = {field: getattr(update, field) for field in update.model_fields_set}
+            if any(field in changed and changed[field] is None for field in ("name", "rotation")):
+                raise SecretError("Invalid credential metadata.")
+            if update.rotation is not None and item.last_rotated_at is not None:
+                changed["next_rotation_at"] = item.last_rotated_at + timedelta(
+                    days=update.rotation.interval_days
+                )
+            item = item.model_copy(update={**changed, "updated_at": now})
             with self.repository.atomic() as db:
                 self._save(db, item)
             return item

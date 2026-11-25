@@ -89,9 +89,9 @@ class Registration(SecretMaterial):
 
 
 class Update(Model):
-    name: Name
+    name: Name | None = None
     expires_at: AwareDatetime | None = None
-    rotation: RotationPolicy = Field(default_factory=RotationPolicy)
+    rotation: RotationPolicy | None = None
 
 
 class RollbackRequest(Model):

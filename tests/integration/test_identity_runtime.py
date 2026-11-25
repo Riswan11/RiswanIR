@@ -558,6 +558,7 @@ def test_secret_api_separates_tenants_and_never_returns_material(tmp_path, runti
     base, identifier = "/v1/secrets", str(uuid4())
     path = f"{base}/{identifier}"
     value = "synthetic-credential-that-must-not-leak"
+    expires = "2099-01-01T00:00:00Z"
 
     def send(route, method="GET", body=None, *, foreign=False):
         cookie, tenant = (bob, other) if foreign else (alice, organization)
@@ -576,7 +577,15 @@ def test_secret_api_separates_tenants_and_never_returns_material(tmp_path, runti
     assert call(app, base)[0] == 401
     assert (
         send(
-            base, "POST", {"id": identifier, "kind": "api_key", "name": "Connector", "value": value}
+            base,
+            "POST",
+            {
+                "id": identifier,
+                "kind": "api_key",
+                "name": "Connector",
+                "value": value,
+                "expires_at": expires,
+            },
         )[0]
         == 201
     )
@@ -590,7 +599,9 @@ def test_secret_api_separates_tenants_and_never_returns_material(tmp_path, runti
         == 404
     )
     assert send(path + "/value")[0] == 404
-    assert send(path, "PATCH", {"name": "Renamed"})[1]["name"] == "Renamed"
+    updated = send(path, "PATCH", {"name": "Renamed"})[1]
+    assert updated["name"] == "Renamed"
+    assert updated["expires_at"] == expires
     assert send(path + "/versions")[1][0]["state"] == "active"
     assert send(path + "/audit")[1]
     assert value.encode() not in control.path.read_bytes()
