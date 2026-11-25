@@ -15,6 +15,8 @@ def observation(day, index, *, operation="GetObject", network="known", hour=3):
         hour=hour,
         weekday=(day + 1) % 7,
         network=network,
+        network_range=network,
+        privilege_target="routine" if operation == "GetObject" else "new-role",
     )
 
 
@@ -32,7 +34,13 @@ def test_cold_start_seasonality_frequency_and_drift():
     assert baseline.samples == 8 and baseline.historical_days == 4
     assert baseline.state == "established" and baseline.expected_daily_count == 2
     assert baseline.seasonal_bucket == "weekday" and baseline.baseline_drift
-    assert {"unusual_operation", "unusual_network", "unusual_hour"} <= set(baseline.signals)
+    assert {
+        "unusual_operation",
+        "unusual_network",
+        "unusual_hour",
+        "unusual_network_range",
+        "unusual_privilege_target",
+    } <= set(baseline.signals)
     (cold,) = evaluate(current, prior[:1], MemoryPolicy())
     assert cold.state == "cold_start" and cold.signals == []
 

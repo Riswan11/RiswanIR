@@ -76,6 +76,7 @@ def expiry(value: str, config: MemoryPolicy, category: Category) -> str:
 def policy_digest(config: MemoryPolicy) -> str:
     data = config.model_dump(mode="json")
     data["enabled_categories"] = sorted(config.enabled_categories)
+    data["cross_account_categories"] = sorted(config.cross_account_categories)
     return sha256(canonical_json(data))
 
 

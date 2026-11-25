@@ -55,6 +55,8 @@ def evaluate(
             for name, getter in (
                 ("unusual_operation", lambda event: event.operation),
                 ("unusual_network", lambda event: event.network),
+                ("unusual_network_range", lambda event: event.network_range),
+                ("unusual_privilege_target", lambda event: event.privilege_target),
                 ("unusual_authentication", lambda event: event.authentication),
                 ("unusual_hour", lambda event: event.hour),
                 ("unusual_resource", lambda event: event.dimensions.get("resource")),

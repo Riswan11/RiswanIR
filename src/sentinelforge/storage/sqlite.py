@@ -604,6 +604,7 @@ class Store:
                 (investigation_id,),
             ).fetchone()
             report.decision = ActionDecision.model_validate(dict(decision)) if decision else None
+            moment = memory_repository.time_key(now())
             history = db.execute(
                 """
                 SELECT i.report, r.disposition FROM investigations i JOIN reviews r
@@ -614,23 +615,38 @@ class Store:
                     SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
                     WHERE e.investigation_id = i.id AND p.raw_id IS NULL
                 )
+                AND (
+                    NOT EXISTS (SELECT 1 FROM memory_cases m WHERE m.case_id = i.id)
+                    OR (
+                        (SELECT COUNT(*) FROM memory_records m WHERE m.case_id = i.id
+                         AND m.category IN ('episodic', 'semantic') AND m.expires_at > ?) = 2
+                        AND EXISTS (SELECT 1 FROM memory_feedback f
+                                    WHERE f.case_id = i.id AND f.expires_at > ?)
+                    )
+                )
                 ORDER BY r.id DESC LIMIT 100
             """,
-                (investigation_id,),
+                (investigation_id, moment, moment),
             )
-            available = allowed_accounts(self._legacy_memory_scope(report), memory_policy())
+            config = memory_policy()
+            current_scope = self._legacy_memory_scope(report)
+            available = allowed_accounts(current_scope, config)
+            required = {"episodic", "semantic", "feedback"}
+            legacy_shared = required <= config.cross_account_categories
             report.similar_investigations = similar_investigations(
                 report,
                 (
                     (prior, Disposition(item["disposition"]))
                     for item in history
                     if available
+                    and required <= config.enabled_categories
                     and (
                         prior_scope := self._legacy_memory_scope(
                             prior := deserialize_report(item["report"])
                         )
                     )
                     and set(prior_scope) <= available
+                    and (prior_scope == current_scope or legacy_shared)
                 ),
             )
         return report

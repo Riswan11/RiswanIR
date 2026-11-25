@@ -1,6 +1,7 @@
 """Project canonical evidence into scoped, minimized history features."""
 
 from collections import defaultdict
+from ipaddress import ip_network
 
 from ..core.fields import utc_timestamp
 from ..correlation.aws import arn_account, partition
@@ -152,11 +153,22 @@ def extract(
         if resources:
             dimensions["resource"] = resources[0]
         network = None
+        network_range = None
         if event.network and event.network.source_ip:
-            network = identifier(event_scope, str(event.network.source_ip))
+            address = event.network.source_ip
+            network = identifier(event_scope, str(address))
+            subnet = ip_network(f"{address}/{24 if address.version == 4 else 64}", strict=False)
+            network_range = identifier(event_scope, str(subnet))
             patterns["indicator:" + network].add(reference)
         else:
             patterns["gap:network"].add(reference)
+        privilege_target = None
+        privilege_key = attrs["resource.uid"]
+        if isinstance(privilege_key, str) and (
+            event.activity.name == "AssumeRole"
+            or operation in {"AttachUserPolicy", "AttachRolePolicy", "AttachGroupPolicy"}
+        ):
+            privilege_target = identifier(event_scope, privilege_key)
         authentication = None
         if event.actor and event.actor.mfa is not None:
             authentication = "mfa" if event.actor.mfa else "no_mfa"
@@ -172,6 +184,8 @@ def extract(
                 hour=time.hour,
                 weekday=time.weekday(),
                 network=network,
+                network_range=network_range,
+                privilege_target=privilege_target,
                 authentication=authentication,
             )
         )

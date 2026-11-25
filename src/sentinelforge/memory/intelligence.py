@@ -65,6 +65,12 @@ def retrieve(
             "enabled_categories": config.enabled_categories & security.enabled_categories,
         }
     )
+    cross_categories = (
+        config.cross_account_categories
+        & security.cross_account_categories
+        & config.enabled_categories
+    )
+    foreign_config = config.model_copy(update={"enabled_categories": cross_categories})
     after = (cutoff - timedelta(days=config.observation_days)).isoformat()
     ids = repository.candidates(db, scopes, as_of, after)
     prior = []
@@ -82,6 +88,12 @@ def retrieve(
         feedback = repository.classification(db, case_id, as_of, current)
         if history is None or feedback is None or not set(history.scope) <= scopes:
             continue
+        if set(history.scope) != set(profile.scope):
+            if "feedback" not in cross_categories:
+                continue
+            history = repository.read(db, case_id, foreign_config, current)
+            if history is None:
+                continue
         if not set(feedback.evidence_references) <= set(history.evidence_references):
             continue
         if history.lineage_id in lineages or used.intersection(history.raw_references):
@@ -162,6 +174,7 @@ def retrieve(
             history.case_id: refs
             for history, _ in prior
             if "response" in config.enabled_categories
+            and (set(history.scope) == set(profile.scope) or "response" in cross_categories)
             and (refs := repository.response(db, history.case_id, current, as_of))
             and set(refs) <= set(history.evidence_references)
         },

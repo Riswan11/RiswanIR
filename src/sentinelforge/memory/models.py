@@ -54,6 +54,7 @@ class MemoryPolicy(CanonicalModel):
         Field(default_factory=list, max_length=20)
     )
     enabled_categories: set[Category] = Field(default_factory=lambda: set(CATEGORIES))
+    cross_account_categories: set[Category] = {"episodic", "semantic", "feedback", "organizational"}
     playbooks: dict[Text, Text] = Field(default_factory=dict, max_length=100)
 
     @model_validator(mode="after")
@@ -75,6 +76,8 @@ class Observation(CanonicalModel):
     hour: Annotated[int, Field(ge=0, le=23)]
     weekday: Annotated[int, Field(ge=0, le=6)]
     network: Text | None = None
+    network_range: Text | None = None
+    privilege_target: Text | None = None
     authentication: Text | None = None
 
 

@@ -221,5 +221,10 @@ def test_explicit_cross_account_policy_and_revocation(client, monkeypatch, tmp_p
     monkeypatch.setenv("SENTINELFORGE_MEMORY_POLICY", str(policy))
     shared = submit(client, records(2, "authorized"))
     assert memory(client, shared)["similar_investigations"][0]["investigation_id"] == foreign["id"]
+    restricted = json.loads(policy.read_text(encoding="utf-8"))
+    restricted["cross_account_categories"] = ["episodic", "semantic"]
+    policy.write_text(json.dumps(restricted), encoding="utf-8")
+    assert memory(client, shared)["similar_investigations"] == []
+    assert client("GET", f"{BASE}/{shared['id']}")[1]["similar_investigations"] == []
     monkeypatch.delenv("SENTINELFORGE_MEMORY_POLICY")
     assert memory(client, shared)["similar_investigations"] == []
