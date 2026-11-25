@@ -42,6 +42,11 @@ This release is for single-user local testing. It uses Pydantic for validation a
 
 ## Tests
 
+Install the test dependencies and run the full suite with branch coverage.
+
 ```sh
-python -m unittest discover -s tests -v
+python -m pip install ".[test]"
+python -m pytest tests/ -v --cov=sentinelforge --cov-report=term-missing --cov-fail-under=90
 ```
+
+Run a single layer with `python -m pytest tests/unit`, `python -m pytest tests/integration`, or `python -m pytest tests/security`. Tests use synthetic CloudTrail events and temporary SQLite databases. The suite runs without AWS credentials or network access after installation.

@@ -1,16 +1,13 @@
 import hashlib
 import json
-import tempfile
 import unittest
-from pathlib import Path
 
 from pydantic import ValidationError
 
-from src.sentinelforge.investigation.analysis import analyze
-from src.sentinelforge.models import (
+from sentinelforge.investigation.analysis import analyze
+from sentinelforge.models import (
     ActionDecision, AnalystFeedback, Evidence, GraphEdge, InvestigationReport, InvestigationRequest, RiskAssessment,
 )
-from src.sentinelforge.storage.sqlite import Store
 
 
 WHEN = "2025-01-01T00:00:00+00:00"
@@ -70,26 +67,3 @@ class ModelTests(unittest.TestCase):
         payload["evidence"].append(payload["evidence"][0])
         with self.assertRaises(ValidationError):
             InvestigationReport.model_validate(payload)
-
-    def test_reads_legacy_sqlite_payload_without_adding_fields(self):
-        legacy = {
-            "id": "legacy", "created_at": WHEN, "title": "Legacy investigation", "principal": PRINCIPAL,
-            "plan": [], "graph": [], "action": None,
-            "evidence": [{"id": "old", "source": "aws.cloudtrail", "observed_at": WHEN, "event": "AssumeRole",
-                          "principal": PRINCIPAL, "target": None, "query": "Exact principal ARN match",
-                          "integrity_hash": "sha256:" + "a" * 64}],
-            "assessment": {"severity": "low", "score": 20, "score_max": 70, "observed_targets": [],
-                           "open_questions": [], "claims": [{"summary": "Role assumption observed",
-                                                             "evidence_ids": ["old"], "possible_attack_technique": "T1078"}]},
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            store = Store(Path(directory) / "test.sqlite3")
-            with store.connect() as db:
-                db.execute("INSERT INTO investigations VALUES (?, ?, ?)", ("legacy", WHEN, json.dumps(legacy)))
-                db.execute("INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?)",
-                           (1, "legacy", "Analyst", "benign", "", WHEN))
-            payload = store.get("legacy").payload()
-            self.assertEqual(payload["evidence"], legacy["evidence"])
-            self.assertEqual(payload["assessment"], legacy["assessment"])
-            self.assertEqual(payload["reviews"][0]["disposition"], "benign")
-            self.assertEqual(store.list()[0].title, legacy["title"])

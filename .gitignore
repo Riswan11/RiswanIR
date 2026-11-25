@@ -8,3 +8,6 @@ local-data/
 build/
 dist/
 *.egg-info/
+.coverage
+.coverage.*
+htmlcov/
