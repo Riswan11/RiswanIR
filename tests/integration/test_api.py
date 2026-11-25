@@ -2,7 +2,6 @@ import pytest
 
 from sentinelforge import __main__
 
-
 BASE = "/v1/investigations"
 
 
@@ -17,14 +16,22 @@ def test_html_and_investigation_list_contract(client, request_payload):
     assert headers["Content-Type"] == "application/json"
     assert headers["X-Content-Type-Options"] == "nosniff"
     assert client("GET", BASE)[:2] == (
-        200, [{key: report[key] for key in ("id", "title", "created_at")}])
+        200,
+        [{key: report[key] for key in ("id", "title", "created_at")}],
+    )
     assert client("GET", f"{BASE}/{report['id']}")[:2] == (200, report)
 
 
-@pytest.mark.parametrize(("method", "path"), [
-    ("GET", "/missing"), ("GET", BASE + "/wrong"), ("GET", BASE + "/" + "0" * 32),
-    ("DELETE", BASE), ("GET", BASE + "/" + "0" * 32 + "/missing"),
-])
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/missing"),
+        ("GET", BASE + "/wrong"),
+        ("GET", BASE + "/" + "0" * 32),
+        ("DELETE", BASE),
+        ("GET", BASE + "/" + "0" * 32 + "/missing"),
+    ],
+)
 def test_missing_resources(client, method, path):
     status, error, _ = client(method, path)
     assert status == 404 and error["error"]
@@ -34,7 +41,9 @@ def test_http_rejection_and_unknown_advisory(client, request_payload):
     _, report, _ = client("POST", BASE, request_payload)
     path = f"{BASE}/{report['id']}/actions"
     assert client("POST", path + "/unknown/reject", {"reviewer": "Analyst"})[0] == 404
-    status, rejected, _ = client("POST", path + "/review-access-key/reject", {"reviewer": "Analyst"})
+    status, rejected, _ = client(
+        "POST", path + "/review-access-key/reject", {"reviewer": "Analyst"}
+    )
     assert status == 201 and rejected["decision"]["decision"] == "reject"
 
 

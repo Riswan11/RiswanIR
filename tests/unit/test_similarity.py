@@ -12,8 +12,10 @@ def test_ranks_by_shared_events_limits_results_and_ignores_zero_overlap(investig
     partial = report("partial", investigation_request.records[:1])
     empty = report("empty", [])
     history = [(partial, Disposition.BENIGN), (empty, Disposition.BENIGN)]
-    history += [(report(f"prior-{index}", investigation_request.records), Disposition.SUSPICIOUS)
-                for index in range(6)]
+    history += [
+        (report(f"prior-{index}", investigation_request.records), Disposition.SUSPICIOUS)
+        for index in range(6)
+    ]
     matches = similar_investigations(current, history)
     assert [match.id for match in matches] == [f"prior-{index}" for index in range(5)]
     assert matches[0].shared_events == ["AssumeRole", "CreateAccessKey", "GetObject"]

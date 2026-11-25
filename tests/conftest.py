@@ -29,8 +29,11 @@ def cloudtrail():
 
 @pytest.fixture
 def request_payload(cloudtrail):
-    return {"title": "Review build service activity", "principal": cloudtrail["Records"][0]["userIdentity"]["arn"],
-            "records": cloudtrail}
+    return {
+        "title": "Review build service activity",
+        "principal": cloudtrail["Records"][0]["userIdentity"]["arn"],
+        "records": cloudtrail,
+    }
 
 
 @pytest.fixture
@@ -48,12 +51,20 @@ def client(store):
     application = validator(Application(store))
 
     def request(method, path, payload=None, *, raw=None, headers=None, length=None):
-        body = raw if raw is not None else json.dumps(payload).encode() if payload is not None else b""
+        body = (
+            raw if raw is not None else json.dumps(payload).encode() if payload is not None else b""
+        )
         env = {}
         setup_testing_defaults(env)
-        env.update(REQUEST_METHOD=method, PATH_INFO=path, QUERY_STRING="", SERVER_PROTOCOL="HTTP/1.1",
-                   HTTP_HOST="localhost:8000", CONTENT_TYPE="application/json",
-                   CONTENT_LENGTH=str(len(body)) if length is None else str(length))
+        env.update(
+            REQUEST_METHOD=method,
+            PATH_INFO=path,
+            QUERY_STRING="",
+            SERVER_PROTOCOL="HTTP/1.1",
+            HTTP_HOST="localhost:8000",
+            CONTENT_TYPE="application/json",
+            CONTENT_LENGTH=str(len(body)) if length is None else str(length),
+        )
         env.update(headers or {})
         env["wsgi.input"] = io.BytesIO(body)
         captured = {}

@@ -13,7 +13,9 @@ def similar_investigations(
     for prior, disposition in history:
         shared = sorted(events.intersection(event.event for event in prior.evidence))
         if shared:
-            similar.append(SimilarInvestigation(id=prior.id, title=prior.title,
-                                                disposition=disposition, shared_events=shared))
-    return sorted(
-        similar, key=lambda item: len(item.shared_events), reverse=True)[:5]
+            similar.append(
+                SimilarInvestigation(
+                    id=prior.id, title=prior.title, disposition=disposition, shared_events=shared
+                )
+            )
+    return sorted(similar, key=lambda item: len(item.shared_events), reverse=True)[:5]

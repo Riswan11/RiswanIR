@@ -9,9 +9,8 @@ from importlib.resources import files
 from .. import frontend
 from ..core.errors import NotFoundError
 from ..core.fields import now
-from ..models import ActionDecision, AnalystFeedback, InvestigationRequest
+from ..models import ActionDecision, AnalystFeedback, ApprovalDecision, InvestigationRequest
 from ..security.host import is_local_host
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,9 +21,13 @@ class Application:
 
     def __call__(self, env, start_response):
         content_type = "application/json"
+        result: object
         try:
             if not is_local_host(env.get("HTTP_HOST", "")):
-                status, result = 400, {"error": "Use localhost or 127.0.0.1 to access SentinelForge."}
+                status, result = (
+                    400,
+                    {"error": "Use localhost or 127.0.0.1 to access SentinelForge."},
+                )
             elif env["PATH_INFO"] == "/" and env["REQUEST_METHOD"] == "GET":
                 result = files(frontend).joinpath("index.html").read_bytes()
                 status, content_type = 200, "text/html; charset=utf-8"
@@ -39,11 +42,20 @@ class Application:
             status, body = 404, json.dumps({"error": str(exc)}).encode()
         except Exception:
             LOGGER.exception("Unexpected error handling local request")
-            status, content_type, body = 500, "application/json", b'{"error":"Internal server error."}'
-        start_response(f"{status} {HTTPStatus(status).phrase}", [
-            ("Content-Type", content_type), ("Content-Length", str(len(body))),
-            ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
-        ])
+            status, content_type, body = (
+                500,
+                "application/json",
+                b'{"error":"Internal server error."}',
+            )
+        start_response(
+            f"{status} {HTTPStatus(status).phrase}",
+            [
+                ("Content-Type", content_type),
+                ("Content-Length", str(len(body))),
+                ("Cache-Control", "no-store"),
+                ("X-Content-Type-Options", "nosniff"),
+            ],
+        )
         return [body]
 
     @staticmethod
@@ -85,6 +97,10 @@ class Application:
             if method == "POST" and action:
                 action_id, decision = action.groups()
                 body = self.body(env)
-                approval = ActionDecision(reviewer=body.get("reviewer"), decision=decision, created_at=now())
+                approval = ActionDecision(
+                    reviewer=body.get("reviewer"),
+                    decision=ApprovalDecision(decision),
+                    created_at=now(),
+                )
                 return 201, self.store.decide(investigation_id, action_id, approval).payload()
         raise NotFoundError("Route not found.")

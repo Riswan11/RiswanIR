@@ -7,7 +7,9 @@ def canonical_hash(fields):
     return "sha256:" + hashlib.sha256(serialized.encode()).hexdigest()
 
 
-def test_persisted_evidence_hash_detects_changed_fields_and_excludes_secrets(client, request_payload):
+def test_persisted_evidence_hash_detects_changed_fields_and_excludes_secrets(
+    client, request_payload
+):
     assert "fixture-secret" in json.dumps(request_payload)
     status, report, _ = client("POST", "/v1/investigations", request_payload)
     assert status == 201

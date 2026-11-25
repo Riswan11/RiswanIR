@@ -3,10 +3,7 @@
 from datetime import datetime, timezone
 
 from ..core.fields import mapping, required, text_field, utc_timestamp
-
-
 from ..models import CloudTrailRecord, NormalizedEvent
-
 
 ROLE_CALLS = {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity"}
 
@@ -41,9 +38,14 @@ def normalize(event: CloudTrailRecord) -> NormalizedEvent:
     )
 
 
-def issued_credential(event: CloudTrailRecord, item: NormalizedEvent) -> tuple[str | None, str | None, datetime | None]:
+def issued_credential(
+    event: CloudTrailRecord, item: NormalizedEvent
+) -> tuple[str | None, str | None, datetime | None]:
     response = mapping(event, "responseElements")
-    if item.event == "AssumeRole" and event.get("eventSource", "sts.amazonaws.com") == "sts.amazonaws.com":
+    if (
+        item.event == "AssumeRole"
+        and event.get("eventSource", "sts.amazonaws.com") == "sts.amazonaws.com"
+    ):
         credentials = mapping(response, "credentials")
         expiry = text_field(credentials, "expiration")
         expires_at = None
@@ -52,11 +54,19 @@ def issued_credential(event: CloudTrailRecord, item: NormalizedEvent) -> tuple[s
                 expires_at = utc_timestamp(expiry)
             except ValueError:
                 try:
-                    expires_at = datetime.strptime(expiry, "%b %d, %Y %I:%M:%S %p").replace(tzinfo=timezone.utc)
+                    expires_at = datetime.strptime(expiry, "%b %d, %Y %I:%M:%S %p").replace(
+                        tzinfo=timezone.utc
+                    )
                 except ValueError:
                     pass
-        return (text_field(credentials, "accessKeyId"),
-                text_field(mapping(response, "assumedRoleUser"), "arn"), expires_at)
-    if item.event == "CreateAccessKey" and event.get("eventSource", "iam.amazonaws.com") == "iam.amazonaws.com":
+        return (
+            text_field(credentials, "accessKeyId"),
+            text_field(mapping(response, "assumedRoleUser"), "arn"),
+            expires_at,
+        )
+    if (
+        item.event == "CreateAccessKey"
+        and event.get("eventSource", "iam.amazonaws.com") == "iam.amazonaws.com"
+    ):
         return text_field(mapping(response, "accessKey"), "accessKeyId"), None, None
     return None, None, None

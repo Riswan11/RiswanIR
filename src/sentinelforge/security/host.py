@@ -2,7 +2,6 @@
 
 import re
 
-
 LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1)(?::[0-9]{1,5})?", re.IGNORECASE | re.ASCII)
 
 
