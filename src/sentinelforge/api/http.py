@@ -16,6 +16,7 @@ from ..models import (
     EvidenceSubmission,
     InvestigationRequest,
 )
+from ..schema.projection import export_events
 from ..security.host import is_local_host
 
 LOGGER = logging.getLogger(__name__)
@@ -98,6 +99,8 @@ class Application:
                 return 200, report[suffix[1:]] if suffix else report
             if method == "GET" and suffix == "/correlation":
                 return 200, self.store.get(investigation_id).payload().get("correlation")
+            if method == "GET" and suffix == "/events":
+                return 200, export_events(self.store.get(investigation_id))
             if method == "POST" and suffix == "/revisions":
                 supplement = EvidenceSubmission.model_validate(self.body(env))
                 return 201, self.store.revise(investigation_id, supplement).payload()

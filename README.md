@@ -23,6 +23,8 @@ For account-scoped CloudTrail Event History or S3 collection, use the local `sen
 
 Investigation reports include [identity and session correlation](docs/architecture/identity-correlation.md), with confidence, supporting evidence and a revision endpoint for late telemetry.
 
+New investigations include [OCSF-aligned events](docs/schema/overview.md). Export them with `GET /v1/investigations/{id}/events`.
+
 After installation, you can also start the app with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
 
 ## Investigation workflow

@@ -1,6 +1,7 @@
 """Evaluate scoring rules against normalized investigation evidence."""
 
-from ..models import Evidence, Finding, RiskAssessment, Severity
+from ..models import Finding, RiskAssessment, Severity
+from ..models.canonical_event import SecurityEvent
 
 RULES = (
     ("role-assumption", 20, "Role assumption observed", "T1078", ("AssumeRole",), 1),
@@ -26,18 +27,20 @@ RULES = (
 )
 
 
-def rule_evidence(evidence: list[Evidence], events: tuple[str, ...], minimum: int) -> list[str]:
+def rule_evidence(
+    evidence: list[SecurityEvent], events: tuple[str, ...], minimum: int
+) -> list[str]:
     if len(events) == 1:
-        ids = [item.id for item in evidence if item.event == events[0]]
+        ids = [item.id for item in evidence if item.activity.name == events[0]]
         return ids if len(ids) >= minimum else []
     by_id = {item.id: item for item in evidence}
     for item in evidence:
-        if item.event != events[-1]:
+        if item.activity.name != events[-1]:
             continue
         matched = [item.id]
         ancestor = item.linked_from_evidence_id
         for event in reversed(events[:-1]):
-            while ancestor and by_id[ancestor].event != event:
+            while ancestor and by_id[ancestor].activity.name != event:
                 ancestor = by_id[ancestor].linked_from_evidence_id
             if not ancestor:
                 break
@@ -48,7 +51,7 @@ def rule_evidence(evidence: list[Evidence], events: tuple[str, ...], minimum: in
     return []
 
 
-def assess(evidence: list[Evidence]) -> RiskAssessment:
+def assess(evidence: list[SecurityEvent]) -> RiskAssessment:
     claims = []
     score = 0
     for rule_id, weight, summary, technique, events, minimum in RULES:
@@ -72,7 +75,7 @@ def assess(evidence: list[Evidence]) -> RiskAssessment:
         if score
         else Severity.UNRATED
     )
-    targets = sorted({item.target for item in evidence if item.target})
+    targets = sorted({item.activity.target for item in evidence if item.activity.target})
     return RiskAssessment(
         severity=severity,
         score=score,

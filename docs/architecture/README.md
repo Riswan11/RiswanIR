@@ -9,5 +9,6 @@ Start with the [system overview](overview.md).
 - [Evidence custody and forensic export](evidence-custody.md)
 - [Read-only AWS collection](aws-collection.md)
 - [Identity and session correlation](identity-correlation.md)
+- [Canonical security event schema](../schema/overview.md)
 - [Architecture decisions](../adr/README.md)
 - [Threat model](../security/threat-model.md)

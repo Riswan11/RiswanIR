@@ -6,7 +6,7 @@ from datetime import datetime
 
 from ..core.fields import utc_timestamp
 from ..evidence.integrity import canonical_json, sha256
-from ..models import Evidence
+from ..models.canonical_event import SecurityEvent, Status
 from ..models.correlation import (
     ActivityChain,
     CorrelationContext,
@@ -21,12 +21,14 @@ from ..models.correlation import (
 from ..models.correlation import (
     CorrelationConfidence as Confidence,
 )
-from ..models.security_event import Outcome, SecurityEvent
 
 
 @dataclass(frozen=True)
 class Observation:
     event: SecurityEvent
+    request_id: str | None
+    shared_request_id: str | None
+    recipient_account_id: str | None
     identity: Identity
     issuer_arn: str | None
     session_created: str | None
@@ -70,7 +72,11 @@ def match(issuer: Observation, caller: Observation) -> Confidence | None:
         and issuer.source_identity != caller.source_identity
     ):
         return None
-    if issuer.issued_arn and caller.event.principal and issuer.issued_arn != caller.event.principal:
+    if (
+        issuer.issued_arn
+        and caller.event.principal_arn
+        and issuer.issued_arn != caller.event.principal_arn
+    ):
         return None
     if (
         issuer.issued_principal_id
@@ -100,7 +106,7 @@ def match(issuer: Observation, caller: Observation) -> Confidence | None:
         )
         if (
             issuer.issued_arn
-            and issuer.issued_arn == caller.event.principal
+            and issuer.issued_arn == caller.event.principal_arn
             and corroborated
             and caller.session_created
             and abs((utc_timestamp(caller.session_created) - issued_at).total_seconds())
@@ -124,18 +130,18 @@ def select(
     for item in sorted(observations, key=lambda row: (row.event.observed_at, row.event.id)):
         event = item.event
         candidates: dict[str, tuple[Observation, Confidence]] = {}
-        possible = keys.get(item.credential_ref or "", []) + arns.get(event.principal or "", [])
+        possible = keys.get(item.credential_ref or "", []) + arns.get(event.principal_arn or "", [])
         if not item.scope_conflict:
             for issuer in possible:
                 confidence = match(issuer, item)
                 if confidence:
-                    paired = issuer.event.shared_event_id
+                    paired = issuer.shared_request_id
                     group = (
                         canonical_json(
                             (
                                 paired,
-                                issuer.event.event_source,
-                                issuer.event.operation,
+                                issuer.event.activity.service,
+                                issuer.event.activity.operation,
                                 issuer.issued_account,
                                 issuer.issued_ref,
                                 issuer.issued_arn,
@@ -143,18 +149,14 @@ def select(
                                 issuer.event.observed_at,
                             )
                         )
-                        if paired
-                        and issuer.event.recipient_account_id
-                        and issuer.event.event_source
+                        if paired and issuer.recipient_account_id and issuer.event.activity.service
                         else issuer.event.id
                     )
                     prior = candidates.get(group)
                     if (
                         prior
                         and prior[0].event.id != issuer.event.id
-                        and (
-                            prior[0].event.recipient_account_id == issuer.event.recipient_account_id
-                        )
+                        and (prior[0].recipient_account_id == issuer.recipient_account_id)
                     ):
                         group = issuer.event.id
                         prior = candidates.get(group)
@@ -163,7 +165,7 @@ def select(
                     ):
                         candidates[group] = issuer, confidence
         related = any(issuer.event.id in picked for issuer in possible)
-        relevant = event.principal == principal or related
+        relevant = event.principal_arn == principal or related
         if relevant:
             if item.scope_conflict or len(candidates) > 1:
                 unresolved.append(
@@ -172,13 +174,13 @@ def select(
             elif related and not candidates:
                 unresolved.append(f"{event.id}: issuance evidence is insufficient or inconsistent.")
             matched = next(iter(candidates.values())) if len(candidates) == 1 else None
-            if event.principal == principal or (matched and matched[0].event.id in picked):
+            if event.principal_arn == principal or (matched and matched[0].event.id in picked):
                 picked[event.id] = item
                 if matched:
                     issuer, confidence = matched
                     if issuer.event.id in picked:
                         links[event.id] = issuer.event.id, confidence
-        if event.outcome == Outcome.SUCCESS and not item.scope_conflict:
+        if event.outcome.status_id == Status.SUCCESS and not item.scope_conflict:
             if item.issued_ref:
                 keys[item.issued_ref].append(item)
             if item.issued_arn:
@@ -192,7 +194,6 @@ def session_id(*parts: str | None) -> str:
 
 def describe(
     observations: list[Observation],
-    evidence: list[Evidence],
     links: dict[str, Link],
     unresolved: list[str],
 ) -> CorrelationResult:
@@ -205,7 +206,6 @@ def describe(
     roots: dict[str, str] = {}
     actor_sessions: dict[str, str] = {}
     issued_sessions: dict[str, str] = {}
-    evidence_by_id = {item.id: item for item in evidence}
     requests: dict[tuple[str | None, ...], Observation] = {}
 
     def add(
@@ -228,7 +228,8 @@ def describe(
         )
 
     for observation in observations:
-        event = evidence_by_id[observation.event.id]
+        event = observation.event
+        region = event.cloud.region if event.cloud else None
         actor = observation.identity
         event_id = event.id
         parent, confidence = links.get(event_id, ("", Confidence.UNKNOWN))
@@ -285,7 +286,7 @@ def describe(
         if (
             role
             and not observation.scope_conflict
-            and event.outcome == Outcome.SUCCESS
+            and event.outcome.status_id == Status.SUCCESS
             and (observation.issued_ref or observation.issued_arn)
         ):
             identities.setdefault(role.id, role)
@@ -337,59 +338,69 @@ def describe(
                     [event_id],
                     "Credential identifier fingerprint",
                 )
-        if event.outcome == Outcome.SUCCESS and event.read_only is not None:
+        if event.outcome.status_id == Status.SUCCESS and event.activity.read_only is not None:
             resources = sorted(
-                {resource.arn for resource in event.resources if resource.arn}
-                | ({event.target} if event.target else set())
+                {resource.uid for resource in event.resources if resource.uid}
+                | ({event.activity.target} if event.activity.target else set())
             )
             for resource in resources:
                 add(
                     sid,
-                    "ACCESSED_RESOURCE" if event.read_only else "MODIFIED_RESOURCE",
+                    "ACCESSED_RESOURCE" if event.activity.read_only else "MODIFIED_RESOURCE",
                     resource,
                     [event_id],
                     "Successful call with explicit CloudTrail readOnly flag",
                 )
         for namespace, value, scope in (
-            ("SHARED_EVENT", event.shared_event_id, (event.event_source, event.operation)),
+            (
+                "SHARED_EVENT",
+                observation.shared_request_id,
+                (event.activity.service, event.activity.operation),
+            ),
             (
                 "RELATED_REQUEST",
-                event.request_id,
-                (actor.id, actor.account_id, event.region, event.event_source, event.operation),
+                observation.request_id,
+                (
+                    actor.id,
+                    actor.account_id,
+                    region,
+                    event.activity.service,
+                    event.activity.operation,
+                ),
             ),
         ):
-            if not value or not event.event_source or not event.operation:
+            if not value or not event.activity.service or not event.activity.operation:
                 continue
             key = (namespace, value, *scope)
-            previous = requests.setdefault(key, observation).event
+            previous = requests.setdefault(key, observation)
             if (
-                previous.id != event_id
+                previous.event.id != event_id
                 and abs(
                     (
-                        utc_timestamp(event.observed_at) - utc_timestamp(previous.observed_at)
+                        utc_timestamp(event.observed_at) - utc_timestamp(previous.event.observed_at)
                     ).total_seconds()
                 )
                 <= Context.request_clock_tolerance_seconds
             ):
                 if (
                     namespace == "SHARED_EVENT"
-                    and event.recipient_account_id
+                    and observation.recipient_account_id
                     and previous.recipient_account_id
-                    and event.recipient_account_id != previous.recipient_account_id
+                    and observation.recipient_account_id != previous.recipient_account_id
                 ):
                     add(
-                        previous.id,
+                        previous.event.id,
                         namespace,
                         event_id,
-                        [previous.id, event_id],
+                        [previous.event.id, event_id],
                         "Shared cross-account event ID",
                     )
-                elif namespace == "RELATED_REQUEST" and actor.account_id and event.region:
+                elif namespace == "RELATED_REQUEST" and actor.account_id and region:
                     add(
-                        previous.id,
+                        previous.event.id,
                         namespace,
                         event_id,
-                        [previous.id, event_id],
+                        [previous.event.id, event_id],
                         "Scoped provider request ID",
                         Confidence.HIGH,
                     )

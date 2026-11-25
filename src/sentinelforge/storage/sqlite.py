@@ -89,9 +89,7 @@ class Store:
         db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
         origins = evidence_store.ingest(db, case_id, request, timestamp, inherited)
         result = analyze(request)
-        result.evidence = evidence_store.record_transformations(
-            db, case_id, request, timestamp, result.evidence, origins, result.correlation
-        )
+        evidence_store.record_transformations(db, case_id, request, timestamp, result, origins)
         report = InvestigationReport(id=case_id, created_at=timestamp, **dict(result))
         if previous:
             report.previous_investigation_id = previous
@@ -115,7 +113,7 @@ class Store:
             if row is None:
                 raise NotFoundError("Investigation not found.")
             previous = deserialize_report(row["report"])
-            status = evidence_store.verify(db, case_id, previous.evidence, previous.correlation)
+            status = evidence_store.verify(db, case_id, previous)
             if not status.valid or status.expired_raw:
                 raise ValueError("A revision requires intact original raw evidence and custody.")
             records = evidence_store.original_records(db, case_id)
@@ -140,7 +138,7 @@ class Store:
             raise NotFoundError("Investigation not found.")
         try:
             report = InvestigationReport.model_validate_json(row["report"])
-            result = evidence_store.verify(db, case_id, report.evidence, report.correlation)
+            result = evidence_store.verify(db, case_id, report)
         except (ValueError, TypeError):
             return EvidenceIntegrity(
                 raw_checked=0,

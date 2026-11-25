@@ -24,6 +24,7 @@ def correlate_with_context(
         raise ValueError(f"{label} ({len(batch.issues)} issues). {details}")
     raw = {str(record["eventID"]).strip(): record for record in records}
     resolver = AWSIdentityResolver()
+    normalized = {item.event.id: item.event for item in batch.records}
     observations = [resolver.adapt(item, raw[item.event.id]) for item in batch.records]
     selected, links, unresolved = select(observations, principal)
     evidence = []
@@ -31,12 +32,12 @@ def correlate_with_context(
         link = links.get(item.event.id)
         evidence.append(
             seal_evidence(
-                item.event,
+                normalized[item.event.id],
                 link[0] if link else None,
                 session_match=bool(link and link[1] == CorrelationConfidence.HIGH),
             )
         )
-    return evidence, describe(selected, evidence, links, unresolved)
+    return evidence, describe(selected, links, unresolved)
 
 
 def correlate(records: list[CloudTrailRecord], principal: str) -> list[Evidence]:

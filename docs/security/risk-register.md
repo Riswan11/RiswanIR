@@ -21,5 +21,6 @@ Statuses describe review and treatment progress. Residual ratings come from the 
 | SF-15 | AI prompt injection, poisoning or disclosure / Not applicable | Security maintainer | Future | Review provider and data boundaries before model integration. |
 | SF-16 | Tool abuse or unauthorized execution / Not applicable | Response maintainer | Future | Require separate authorization and audit design before execution. |
 | SF-17 | AWS credential, scope or collection budget exposure / Medium | Connector maintainer | Open | Validate each role, bucket and workload budget in a dedicated sandbox before use. |
+| SF-18 | Canonical misclassification or export disclosure / Medium | Schema maintainer | Monitored | Review mapping semantics, privacy and compatibility for new versions and extensions. |
 
 For a new or changed risk, record the corresponding STRIDE ID, affected assets, existing controls, owner, treatment status, and review trigger. Record risk acceptance with rationale, scope, reviewer and expiry. Track private details through the process in [SECURITY.md](../../SECURITY.md).
