@@ -17,6 +17,8 @@ For your own data, paste a single CloudTrail event, a log with a top-level `Reco
 
 The local SQLite database defaults to `sentinelforge.sqlite3`. Set `SENTINELFORGE_DB` to choose a different file or `SENTINELFORGE_PORT` to change the port.
 
+New investigations retain original CloudTrail record values in local SQLite. Raw telemetry can contain credentials or other sensitive data. Keep the database, backups, and forensic exports under restricted workstation access. See [evidence custody, verification, and retention](docs/architecture/evidence-custody.md) for local commands.
+
 After installation, you can also start the app with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
 
 ## Investigation workflow
