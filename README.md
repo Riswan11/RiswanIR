@@ -10,8 +10,11 @@ Requires Python 3.11 or newer. From the repository root, run:
 
 ```sh
 python -m pip install .
-python -m riswan_ir
+RISWAN_IR_MODE=local python -m riswan_ir
 ```
+
+In PowerShell, set `$env:RISWAN_IR_MODE = "local"` before running `python -m riswan_ir`
+or the collector, evidence and detection commands. `python server.py` remains an explicit local launcher.
 
 Open [the analyst workspace](http://127.0.0.1:8000). Select **Load sample**, then **Investigate** to run a synthetic incident. Review the evidence and graph, enter a reviewer name, and save a disposition. Submit the sample again to see the earlier review in related investigations.
 
@@ -109,3 +112,5 @@ See [risk and confidence scoring](docs/detection/risk-scoring.md) for assessment
 See [historical investigation memory](docs/detection/historical-memory.md) for similarity, baselines, recurrence, feedback and retention.
 
 See [brand and planned domain architecture](docs/architecture/brand-and-domains.md).
+
+See [platform architecture and product boundaries](docs/architecture/platform-boundaries.md).

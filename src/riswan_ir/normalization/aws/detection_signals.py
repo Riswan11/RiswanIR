@@ -3,8 +3,9 @@
 import json
 from typing import Any
 
+from riswan_security_data.canonical_event import CanonicalModel
+
 from ...core.fields import mapping, text_field
-from ...models.canonical_event import CanonicalModel
 
 
 class DetectionSignals(CanonicalModel):

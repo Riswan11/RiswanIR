@@ -2,8 +2,9 @@
 
 from datetime import datetime, timezone
 
+from riswan_security_data.canonical_event import Principal, SecurityEvent
+
 from ..core.fields import utc_timestamp
-from ..models.canonical_event import Principal, SecurityEvent
 from .registry import ACCOUNT_CHANGE, API_ACTIVITY, AUTHENTICATION
 
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)

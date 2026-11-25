@@ -11,16 +11,22 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from ..core.config import database_path
+from riswan_app.composition import open_local_job_store
+from riswan_app.local import local_context
+from riswan_platform.core.context import bind_context
+from riswan_platform.core.exceptions import ContextRequiredError
+
+from ..core.config import database_path, setting
 from ..ingestion.orchestrator import next_window, run_collection
+from ..ingestion.ports import CollectionRepository
 from ..models.collection import CollectionRequest
 from ..models.connector import ConnectorConfig
+from ..product import IRProduct
 from ..storage import checkpoint_store
-from ..storage.sqlite import Store
 
 
 def run_due(
-    store: Store,
+    store: CollectionRepository,
     configs: list[ConnectorConfig],
     due: dict[str, float],
     backfill: CollectionRequest | None,
@@ -48,45 +54,51 @@ def main() -> int:
     commands.add_parser("status")
     args = parser.parse_args()
     try:
-        configs = TypeAdapter(list[ConnectorConfig]).validate_json(args.config.read_bytes())
-        if not configs or len({config.scope for config in configs}) != len(configs):
-            raise ValueError
-        store = Store(args.db)
-        if args.command == "status":
-            with store.connect() as db:
-                for config in configs:
-                    health = checkpoint_store.load_status(db, config.scope)
-                    progress = checkpoint_store.checkpoint(db, config.scope)
-                    print(
-                        json.dumps(
-                            {
-                                "scope": config.scope,
-                                "kind": config.kind,
-                                "health": health.payload() if health else None,
-                                "checkpoint": progress.payload() if progress else None,
-                            }
+        with bind_context(
+            local_context(setting("MODE"), IRProduct().product_id, actor_type="service")
+        ):
+            configs = TypeAdapter(list[ConnectorConfig]).validate_json(args.config.read_bytes())
+            if not configs or len({config.scope for config in configs}) != len(configs):
+                raise ValueError
+            store = open_local_job_store(args.db)
+            if args.command == "status":
+                with store.connect() as db:
+                    for config in configs:
+                        health = checkpoint_store.load_status(db, config.scope)
+                        progress = checkpoint_store.checkpoint(db, config.scope)
+                        print(
+                            json.dumps(
+                                {
+                                    "scope": config.scope,
+                                    "kind": config.kind,
+                                    "health": health.payload() if health else None,
+                                    "checkpoint": progress.payload() if progress else None,
+                                }
+                            )
                         )
-                    )
-            return 0
-        backfill = None
-        if args.start or args.end:
-            if not args.start or not args.end or args.watch:
-                raise ValueError
-            backfill = CollectionRequest.model_validate(
-                {"start": args.start, "end": args.end, "incremental": False}
-            )
-            if backfill.end > datetime.now(timezone.utc) or any(
-                backfill.end - backfill.start > timedelta(minutes=config.window_minutes)
-                for config in configs
-            ):
-                raise ValueError
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
-        due: dict[str, float] = {}
-        while True:
-            failed = run_due(store, configs, due, backfill)
-            if not args.watch:
-                return int(failed)
-            time.sleep(max(0.1, min(due.values()) - time.monotonic()))
+                return 0
+            backfill = None
+            if args.start or args.end:
+                if not args.start or not args.end or args.watch:
+                    raise ValueError
+                backfill = CollectionRequest.model_validate(
+                    {"start": args.start, "end": args.end, "incremental": False}
+                )
+                if backfill.end > datetime.now(timezone.utc) or any(
+                    backfill.end - backfill.start > timedelta(minutes=config.window_minutes)
+                    for config in configs
+                ):
+                    raise ValueError
+            logging.basicConfig(level=logging.INFO, format="%(message)s")
+            due: dict[str, float] = {}
+            while True:
+                failed = run_due(store, configs, due, backfill)
+                if not args.watch:
+                    return int(failed)
+                time.sleep(max(0.1, min(due.values()) - time.monotonic()))
+    except ContextRequiredError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         return 130
     except (ValueError, OSError, sqlite3.Error):

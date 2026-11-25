@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
+from riswan_security_data.provenance import EvidenceProvenance
+
 from ..core.config import setting
 from ..core.errors import NotFoundError
 from ..core.fields import now, utc_timestamp
@@ -49,13 +51,13 @@ from ..models import (
 )
 from ..models.chain_of_custody import EvidenceIntegrity, EvidenceRetentionPolicy
 from ..models.detection import DetectionContext, DetectionReplayResult, DetectionRule
-from ..models.provenance import EvidenceProvenance
 from ..normalization.aws.ocsf_mapper import map_event
 from ..risk import repository as risk_repository
 from ..risk.engine import calculate as calculate_risk
 from ..risk.models import Assessment, Reassessment, Trigger
 from ..risk.reassessment import score_case
 from . import checkpoint_store, evidence_store
+from .review_store import latest_disposition
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS investigations (
@@ -297,10 +299,6 @@ class Store:
         if row is None:
             raise NotFoundError("Investigation not found.")
         report = deserialize_report(row["report"])
-        latest = db.execute(
-            "SELECT disposition FROM reviews WHERE investigation_id = ? ORDER BY id DESC LIMIT 1",
-            (case_id,),
-        ).fetchone()
         snapshot = temporal_repository.load(db, case_id)
         live = memory_policy()
         profile = memory_repository.read(db, case_id, live, timestamp)
@@ -326,7 +324,7 @@ class Store:
             self.detection_context,
             timestamp,
             trigger,
-            disposition=Disposition(latest["disposition"]) if latest else None,
+            disposition=latest_disposition(db, case_id),
             request=request,
             historical=historical,
         )

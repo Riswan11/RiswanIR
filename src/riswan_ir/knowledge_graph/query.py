@@ -5,8 +5,9 @@ from typing import Literal
 
 from pydantic import Field
 
+from riswan_security_data.canonical_event import CanonicalModel
+
 from ..core.errors import NotFoundError
-from ..models.canonical_event import CanonicalModel
 from .models import GraphId, GraphNode, SecurityGraph, SecurityRelationship
 from .ontology import Entity, Relation
 

@@ -16,13 +16,15 @@ from ..models.connector import (
     ConnectorStatus,
 )
 from ..storage import checkpoint_store
-from ..storage.sqlite import Store
 from .pipeline import persist
+from .ports import CollectionRepository
 
 LOGGER = logging.getLogger(__name__)
 
 
-def next_window(store: Store, config: ConnectorConfig, now: datetime) -> CollectionRequest | None:
+def next_window(
+    store: CollectionRepository, config: ConnectorConfig, now: datetime
+) -> CollectionRequest | None:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         interrupted = checkpoint_store.pending(db, config.scope)
@@ -42,7 +44,7 @@ def next_window(store: Store, config: ConnectorConfig, now: datetime) -> Collect
 
 
 def run_collection(
-    store: Store,
+    store: CollectionRepository,
     config: ConnectorConfig,
     window: CollectionRequest,
     factory: Callable[[ConnectorConfig, RequestBudget], TelemetryConnector] = create_connector,

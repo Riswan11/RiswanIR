@@ -4,8 +4,9 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, StringConstraints, model_validator
 
+from riswan_security_data.canonical_event import CanonicalModel
+
 from ..models.base import Text, Timestamp
-from ..models.canonical_event import CanonicalModel
 from ..models.detection import Version
 
 Category = Literal[

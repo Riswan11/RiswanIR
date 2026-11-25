@@ -2,7 +2,7 @@
 
 from ipaddress import ip_address
 
-from ...models.canonical_event import (
+from riswan_security_data.canonical_event import (
     Actor,
     CanonicalModel,
     CloudContext,
@@ -16,7 +16,8 @@ from ...models.canonical_event import (
     SecurityEvent,
     Status,
 )
-from ...models.provenance import EvidenceReference
+from riswan_security_data.provenance import EvidenceReference
+
 from ...models.schema import SchemaExtension, SchemaMapping
 from ...models.security_event import NormalizedEvent, Outcome
 from ...schema.registry import (

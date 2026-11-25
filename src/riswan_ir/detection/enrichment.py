@@ -1,6 +1,7 @@
 """Derive detection attributes from canonical observations and trusted local inventory."""
 
-from ..models.canonical_event import SecurityEvent
+from riswan_security_data.canonical_event import SecurityEvent
+
 from ..models.detection import DetectionContext, FieldPath, Scalar
 
 Attributes = dict[FieldPath, Scalar | None]

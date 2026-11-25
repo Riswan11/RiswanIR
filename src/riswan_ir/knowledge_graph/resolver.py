@@ -1,6 +1,6 @@
 """Resolve stable node and relationship identifiers without crossing scopes."""
 
-from ..evidence.integrity import canonical_json, sha256
+from riswan_security_data.integrity import canonical_json, sha256
 
 
 def identifier(*parts: str | None) -> str:

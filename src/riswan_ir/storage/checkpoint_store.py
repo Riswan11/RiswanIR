@@ -69,3 +69,23 @@ def release(db: sqlite3.Connection, scope: str, window: CollectionRequest) -> No
         "DELETE FROM collection_pending WHERE scope = ? AND window = ?",
         (scope, window.model_dump_json()),
     )
+
+
+def accept_receipt(
+    db: sqlite3.Connection,
+    scope: str,
+    location: str,
+    event_id: str,
+    digest: str,
+) -> bool:
+    existing = db.execute(
+        "SELECT digest FROM collection_receipts WHERE scope = ? AND event_id = ? LIMIT 1",
+        (scope, event_id),
+    ).fetchone()
+    if existing and existing["digest"] != digest:
+        raise FileExistsError("Conflicting collection receipt.")
+    row = db.execute(
+        "INSERT OR IGNORE INTO collection_receipts VALUES (?, ?, ?, ?)",
+        (scope, location, event_id, digest),
+    )
+    return bool(row.rowcount)

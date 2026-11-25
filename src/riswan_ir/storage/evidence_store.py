@@ -5,17 +5,22 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 
+from riswan_security_data.canonical_event import SecurityEvent
+from riswan_security_data.provenance import (
+    EvidenceProvenance,
+    EvidenceReference,
+    EvidenceTransformation,
+)
+
 from ..core.fields import mapping, text_field
 from ..evidence.integrity import attach_reference, canonical_json, sha256
 from ..models import InvestigationReport, InvestigationRequest, InvestigationResult
-from ..models.canonical_event import SecurityEvent
 from ..models.chain_of_custody import (
     ChainOfCustodyEntry,
     EvidenceIntegrity,
     EvidenceRetentionPolicy,
 )
 from ..models.evidence import RawEvidence
-from ..models.provenance import EvidenceProvenance, EvidenceReference, EvidenceTransformation
 
 NORMALIZATION_VERSION = "cloudtrail-2"
 SCHEMA_VERSION = "1"
@@ -227,6 +232,18 @@ def transformations(db: sqlite3.Connection, case_id: str) -> list[EvidenceTransf
             (case_id,),
         )
     ]
+
+
+def has_retained_case_payloads(db: sqlite3.Connection, case_id: str) -> bool:
+    """Expose the case-level evidence retention condition to owning application adapters."""
+    return (
+        db.execute(
+            """SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
+           WHERE e.investigation_id = ? AND p.raw_id IS NULL LIMIT 1""",
+            (case_id,),
+        ).fetchone()
+        is None
+    )
 
 
 def raw_rows(db: sqlite3.Connection, case_id: str) -> list[sqlite3.Row]:

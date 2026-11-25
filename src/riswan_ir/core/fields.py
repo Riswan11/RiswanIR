@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+from riswan_security_data.time import utc_timestamp as utc_timestamp
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -22,10 +24,3 @@ def mapping(data, key):
 def text_field(data, name, limit=300):
     value = data.get(name)
     return value[:limit] if isinstance(value, str) and value else None
-
-
-def utc_timestamp(value):
-    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if timestamp.utcoffset() is None:
-        raise ValueError("CloudTrail eventTime must include a timezone.")
-    return timestamp.astimezone(timezone.utc)

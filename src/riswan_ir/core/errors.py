@@ -1,5 +1,3 @@
-"""Errors shared across application boundaries."""
+"""Compatibility export for the platform error contract."""
 
-
-class NotFoundError(LookupError):
-    pass
+from riswan_platform.core.exceptions import NotFoundError as NotFoundError

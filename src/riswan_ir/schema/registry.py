@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
+from riswan_security_data.canonical_event import SecurityEvent
+
 from ..models.base import DomainModel
-from ..models.canonical_event import SecurityEvent
 from ..models.schema import (
     ClassDefinition,
     SchemaDefinition,

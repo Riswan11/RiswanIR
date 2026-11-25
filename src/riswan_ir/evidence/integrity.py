@@ -1,18 +1,10 @@
 """Hash the canonical JSON representation of an evidence item."""
 
-import hashlib
-import json
+from riswan_security_data.integrity import canonical_json as canonical_json
+from riswan_security_data.integrity import sha256 as sha256
+from riswan_security_data.provenance import EvidenceReference
 
 from ..models import Evidence, NormalizedEvent
-from ..models.provenance import EvidenceReference
-
-
-def canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def sha256(value: str) -> str:
-    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
 
 
 def attach_reference(evidence: Evidence, reference: EvidenceReference) -> Evidence:

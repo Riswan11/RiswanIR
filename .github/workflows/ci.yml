@@ -22,10 +22,10 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install ".[test]"
-      - name: Run unit, integration, and security tests
+      - name: Run architecture, contract, and application tests
         run: |
           mkdir -p reports
-          python -m pytest tests/ -v --junitxml=reports/pytest.xml -o junit_family=xunit1 --cov=riswan_ir \
+          python -m pytest tests/ -v --junitxml=reports/pytest.xml -o junit_family=xunit1 --cov \
             --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=90
       - name: Verify installed browser asset
         run: python -c "from importlib.resources import files; from riswan_ir import frontend; from riswan_ir.correlation.temporal.registry import default_rules; from riswan_ir.detection.registry import default_registry; from riswan_ir.risk.registry import default_policy; assert files(frontend).joinpath('index.html').is_file(); assert len(default_registry().select()) >= 20; assert len(default_rules()) >= 10; assert default_policy().id == 'security-intelligence'"

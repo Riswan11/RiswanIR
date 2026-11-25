@@ -1,7 +1,8 @@
 """Evaluate scoring rules against normalized investigation evidence."""
 
+from riswan_security_data.canonical_event import SecurityEvent
+
 from ..models import Finding, RiskAssessment, Severity
-from ..models.canonical_event import SecurityEvent
 
 RULES = (
     ("role-assumption", 20, "Role assumption observed", "T1078", ("AssumeRole",), 1),

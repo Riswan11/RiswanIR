@@ -6,8 +6,9 @@ from urllib.parse import parse_qs
 
 from pydantic import Field
 
+from riswan_security_data.canonical_event import CanonicalModel
+
 from ..core.errors import NotFoundError
-from ..models.canonical_event import CanonicalModel
 from .models import Assessment
 
 

@@ -4,6 +4,10 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import TypeVar
 
+from riswan_security_data.canonical_event import SecurityEvent
+from riswan_security_data.canonical_event import Status as Outcome
+from riswan_security_data.provenance import EvidenceProvenance
+
 from ..core.fields import utc_timestamp
 from ..correlation.temporal.models import TemporalResult
 from ..detection.enrichment import enrich
@@ -11,11 +15,8 @@ from ..knowledge_graph.models import SecurityGraph, SecurityRelationship
 from ..knowledge_graph.ontology import Entity, Relation
 from ..memory.models import Intelligence
 from ..models import Disposition, InvestigationReport
-from ..models.canonical_event import SecurityEvent
-from ..models.canonical_event import Status as Outcome
 from ..models.chain_of_custody import EvidenceIntegrity
 from ..models.detection import DetectionContext
-from ..models.provenance import EvidenceProvenance
 from ..normalization.aws.ocsf_mapper import map_event
 from .models import AssessmentInputs, Factor, RiskInventory, Severity, Status, Subject
 

@@ -23,3 +23,14 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0015. Preserve independent risk and confidence assessments](0015-risk-assessment-history.md)
 
 - [0016. Retrieve scoped and evidence-backed historical intelligence](0016-scoped-historical-memory.md)
+
+- [0017. Retain one deployable modular monolith](0017-retained-modular-monolith.md)
+- [0018. Separate shared platform from product intelligence](0018-platform-product-boundaries.md)
+- [0019. Enforce dependency direction](0019-dependency-direction.md)
+- [0020. Bind trusted execution context](0020-execution-context.md)
+- [0021. Publish a minimal product module contract](0021-product-module-contract.md)
+- [0022. Keep SQLite with explicit data ownership](0022-persistence-ownership.md)
+- [0023. Introduce bounded in-process notifications](0023-domain-events.md)
+- [0024. Publish versioned security finding contracts](0024-cross-product-findings.md)
+- [0025. Organize platform, data, IR and composition in one repository](0025-repository-package-layout.md)
+- [0026. Require a measured reason for service extraction](0026-future-service-extraction.md)
