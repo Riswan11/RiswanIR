@@ -19,7 +19,7 @@ from riswan_platform.tenancy import (
 )
 
 from .hosted_collection import CollectionAPI
-from .hosted_product import HostedProduct
+from .hosted_product import HostedPostgresCases, HostedProduct
 from .secret_api import BASE as SECRETS_BASE
 from .secret_api import SecretAPI
 from .tenancy import Tenancy
@@ -33,7 +33,7 @@ class TenantAPI:
     def __init__(
         self,
         tenancy: Tenancy,
-        product: HostedProduct,
+        product: HostedProduct | HostedPostgresCases,
         origin: str,
         secrets: SecretAPI | None = None,
         collections: CollectionAPI | None = None,

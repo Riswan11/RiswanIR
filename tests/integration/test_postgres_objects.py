@@ -3,7 +3,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -29,7 +29,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,)]
+        ).fetchall() == [(1,), (2,), (3,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -136,3 +136,112 @@ def test_postgres_case_ownership_scopes_directory_and_sql(postgres_pool):
             )
         with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
             db.execute("SELECT count(*) FROM riswan_data.schema_migrations")
+
+
+def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, request_payload):
+    import psycopg
+    from psycopg_pool import PoolClosed
+
+    from riswan_app import identity_runtime
+    from riswan_platform.identity.configuration import OIDCSettings
+    from tests.integration.test_identity_runtime import FixtureProvider, call, login
+
+    configuration = OIDCSettings(
+        issuer="https://issuer.example",
+        jwks_url="https://issuer.example/jwks",
+        authorization_url="https://login.example/authorize",
+        token_url="https://login.example/token",
+        redirect_uri="https://app.example/v1/auth/callback",
+        client_id="browser",
+        access_audience="riswan-api",
+        invited_subjects={"alice", "bob"},
+    )
+    path = tmp_path / "oidc.json"
+    path.write_text(configuration.model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(identity_runtime, "OIDCProvider", FixtureProvider)
+    app = identity_runtime.compose_identity(
+        path,
+        tmp_path / "identity.sqlite3",
+        tmp_path / "workstation.sqlite3",
+        control_db=tmp_path / "control.sqlite3",
+        postgres_case_pool=postgres_pool,
+    )
+    alice, _ = login(app, "alice")
+    bob, _ = login(app, "bob")
+
+    def send(path, method="GET", *, cookie=alice, tenant=None, payload=None):
+        status, _, response = call(
+            app,
+            path,
+            method,
+            cookie=cookie,
+            origin="https://app.example",
+            tenant=tenant,
+            payload=payload,
+        )
+        return status, response
+
+    _, first = send("/v1/organizations", "POST", payload={"name": "First"})
+    _, second = send("/v1/organizations", "POST", cookie=bob, payload={"name": "Second"})
+    a, b = first["tenant_id"], second["tenant_id"]
+    base = "/v1/investigations"
+    assert send(base)[0] == 404
+    status, report = send(base, "POST", tenant=a, payload=request_payload)
+    assert status == 201
+    case = report["id"]
+    endpoint = f"{base}/{case}"
+    assert send(endpoint, tenant=a)[1]["title"] == request_payload["title"]
+    assert send(base, tenant=a)[1][0]["id"] == case
+    assert send(endpoint, "PATCH", tenant=a, payload={"title": "Updated"})[1]["title"] == "Updated"
+    assert send(endpoint, tenant=b, cookie=bob)[0] == 404
+    assert send(endpoint, "PATCH", tenant=b, cookie=bob, payload={"title": "Denied"})[0] == 404
+    assert send(base, tenant=b, cookie=bob) == (200, [])
+    assert send(endpoint + "/risk", tenant=a)[0] == 501
+    with postgres_pool.connection() as db:
+        assert db.execute("SELECT count(*) FROM riswan_data.investigations").fetchone() == (0,)
+        with db.transaction():
+            db.execute(
+                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', 'ir', true)",
+                (a,),
+            )
+            row = db.execute(
+                "SELECT report, artifacts FROM riswan_data.investigations WHERE investigation_id = %s",
+                (case,),
+            ).fetchone()
+            assert row[0]["title"] == "Updated"
+            assert row[1]["evidence_receipts"] and row[1]["security_graphs"]
+            assert row[1]["raw_evidence"] and row[1]["evidence_custody"]
+            with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
+                orphan = uuid4().hex
+                db.execute(
+                    "INSERT INTO riswan_data.investigations VALUES (%s, 'ir', %s, jsonb_build_object('id', %s::text), '{}')",
+                    (a, orphan, orphan),
+                )
+    hosted = app._authenticated_routes.product
+    insert = hosted.store._directory.insert
+
+    def aborted(db, scope, case_id, stamp):
+        insert(db, scope, case_id, stamp)
+        raise psycopg.OperationalError("simulated failure after ownership insert")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(hosted.store._directory, "insert", aborted)
+        assert send(base, "POST", tenant=a, payload=request_payload)[0] == 503
+    with bind_context(PlatformContext(UUID(a), str(uuid4()), "human", "ir", "req", "corr")):
+        assert list(hosted.store.owned_investigations(UUID(a))) == [case]
+    with bind_context(PlatformContext(UUID(a), str(uuid4()), "human", "other", "req", "corr")):
+        from riswan_platform.core.exceptions import NotFoundError
+
+        with pytest.raises(NotFoundError):
+            hosted.store.get(case)
+
+    def unavailable():
+        raise PoolClosed("simulated failure")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(postgres_pool, "connection", unavailable)
+        assert send(endpoint, tenant=a)[0] == 503
+    assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
+        "control.sqlite3",
+        "identity.sqlite3",
+    ]

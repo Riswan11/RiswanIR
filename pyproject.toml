@@ -80,5 +80,5 @@ check_untyped_defs = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["azure.*", "boto3.*", "botocore.*", "google.*", "cryptography.*", "yaml.*"]
+module = ["azure.*", "boto3.*", "botocore.*", "google.*", "cryptography.*", "psycopg.*", "psycopg_pool.*", "yaml.*"]
 ignore_missing_imports = true

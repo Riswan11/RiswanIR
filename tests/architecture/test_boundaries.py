@@ -154,6 +154,7 @@ def test_table_writes_stay_with_the_owners():
     owners = {
         "riswan_data.protected_objects": "riswan_app.postgres_objects",
         "riswan_data.investigation_ownership": "riswan_app.postgres_case_ownership",
+        "riswan_data.investigations": "riswan_app.postgres_cases",
     }
     identifier = r"((?:\w+\.)?\w+)"
     migrations = (SRC / "riswan_app" / "migrations").glob("*.sql")

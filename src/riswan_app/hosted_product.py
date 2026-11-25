@@ -5,6 +5,7 @@ from dataclasses import replace
 from uuid import UUID
 
 from riswan_ir.api.http import Application
+from riswan_ir.models import InvestigationRequest, InvestigationSummary
 from riswan_ir.product import IRProduct
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.authorization import (
@@ -20,11 +21,12 @@ from riswan_platform.core.exceptions import NotFoundError
 from riswan_platform.data_protection import HoldReason
 from riswan_platform.identity.models import VerifiedPrincipal
 
+from .postgres_cases import CaseUpdate, PostgresCases
 from .tenancy import Tenancy
 
 
 class IRResources:
-    def __init__(self, store: Store, tenant_id: UUID):
+    def __init__(self, store: Store | PostgresCases, tenant_id: UUID):
         self.store = store
         self.tenant_id = tenant_id
         self._cases = store.owned_investigations(tenant_id)
@@ -56,6 +58,8 @@ class IRResources:
         case = self._case(case_id)
         if kind == ScopeType.INVESTIGATION and not child:
             return case
+        if isinstance(self.store, PostgresCases):
+            return None
         if kind == ScopeType.EVIDENCE:
             if case_id not in self._evidence:
                 self._evidence[case_id] = {
@@ -129,3 +133,56 @@ class HostedProduct:
         except NotFoundError as exc:
             raise AccessDenied from exc
         return (200 if release else 201), hold.model_dump(mode="json")
+
+
+class HostedPostgresCases:
+    """Explicit composition-only preview of supported case operations."""
+
+    def __init__(self, tenancy: Tenancy, store: PostgresCases):
+        self.tenancy = tenancy
+        self.store = store
+
+    def route(self, env, principal: VerifiedPrincipal, tenant_id: UUID, request_id: str):
+        from psycopg import Error
+        from psycopg_pool import PoolClosed, PoolTimeout
+
+        with self.tenancy.authorization.transaction():
+            context = self.tenancy.context_for(principal, tenant_id, "ir", request_id)
+            if context is None:
+                raise AccessDenied
+            try:
+                with bind_context(context):
+                    return self._case_route(env, tenant_id)
+            except NotFoundError as exc:
+                raise AccessDenied from exc
+            except (Error, PoolClosed, PoolTimeout):
+                return 503, {"error": "PostgreSQL case storage unavailable."}
+
+    def _case_route(self, env, tenant_id: UUID):
+        method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
+        guard = Enforcement(self.tenancy.evaluator, IRResources(self.store, tenant_id))
+        if path == "/v1/investigations":
+            if method == "POST":
+                guard.require(Permission.CREATE, ScopeType.PRODUCT, "ir")
+                report = self.store.create(
+                    InvestigationRequest.model_validate(Application.body(env))
+                )
+                return 201, {"id": report.id, "created_at": report.created_at}
+            if method == "GET":
+                return 200, [
+                    item.payload() for item in self.store.list_scoped(guard.investigation_ids())
+                ]
+        match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})", path)
+        if match is None or method not in {"GET", "PATCH"}:
+            return 501, {"error": "Operation unavailable in the PostgreSQL case preview."}
+        case_id = match[1]
+        guard.require(Permission.READ, ScopeType.INVESTIGATION, case_id)
+        if method == "PATCH":
+            guard.require(Permission.UPDATE, ScopeType.INVESTIGATION, case_id)
+            return 200, self.store.update(
+                case_id, CaseUpdate.model_validate(Application.body(env))
+            ).payload()
+        report = self.store.get(case_id)
+        return 200, InvestigationSummary(
+            id=report.id, title=report.title, created_at=report.created_at
+        ).payload()

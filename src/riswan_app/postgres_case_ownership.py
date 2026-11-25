@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from riswan_platform.core.context import require_context
+from riswan_platform.core.context import PlatformContext, require_context
 from riswan_platform.core.exceptions import ContextRequiredError
 
 from .postgres_scope import ScopedPostgres
@@ -17,18 +17,16 @@ class PostgresCaseOwnership:
     def register(self, case_id: str, created_at: datetime) -> None:
         """Insert ownership under the trusted transaction scope."""
         with self._scope.transaction() as (db, context):
-            db.execute(
-                """INSERT INTO riswan_data.investigation_ownership
-                   (tenant_id, product_id, investigation_id, creator_id, created_at)
-                   VALUES (%s, %s, %s, %s, %s)""",
-                (
-                    context.tenant_id,
-                    context.product_id,
-                    case_id,
-                    UUID(context.actor_id),
-                    created_at,
-                ),
-            )
+            self.insert(db, context, case_id, created_at)
+
+    @staticmethod
+    def insert(db: Any, context: PlatformContext, case_id: str, created_at: datetime) -> None:
+        db.execute(
+            """INSERT INTO riswan_data.investigation_ownership
+               (tenant_id, product_id, investigation_id, creator_id, created_at)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (context.tenant_id, context.product_id, case_id, UUID(context.actor_id), created_at),
+        )
 
     def owned_investigations(self, tenant_id: UUID) -> dict[str, UUID]:
         if require_context().tenant_id != tenant_id:

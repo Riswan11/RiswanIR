@@ -109,9 +109,13 @@ class Store:
         detection_context: DetectionContext | None = None,
         detection_registry: RuleRegistry | None = None,
         hosted: bool = False,
+        transient: bool = False,
     ):
         self.path = path
         self.hosted = hosted
+        self._transient = transient
+        if transient and (path != ":memory:" or not hosted):
+            raise ValueError("Transient case compilation requires hosted in-memory storage.")
         policy = setting("DETECTION_CONTEXT")
         registry = setting("DETECTION_RULES")
         if detection_context is None and policy:
@@ -125,30 +129,38 @@ class Store:
             RuleRegistry.from_file(Path(registry)) if registry else default_registry()
         )
         # Existing databases keep their operating-system permissions.
-        if os.name == "posix":
+        if os.name == "posix" and not transient:
             try:
                 os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
             except FileExistsError:
                 pass
-        with self.connect() as db:
-            db.executescript(
-                SCHEMA
-                + evidence_store.EVIDENCE_SCHEMA
-                + checkpoint_store.SCHEMA
-                + GRAPH_SCHEMA
-                + temporal_repository.SCHEMA
-                + risk_repository.SCHEMA
-                + memory_repository.SCHEMA
-                + legal_holds.SCHEMA
-            )
-            db.execute("BEGIN IMMEDIATE")
-            evidence_store.split_owned_payloads(db)
+        if not transient:
+            with self.connect() as db:
+                self._initialize(db)
+
+    @staticmethod
+    def _initialize(db: sqlite3.Connection) -> None:
+        db.executescript(
+            SCHEMA
+            + evidence_store.EVIDENCE_SCHEMA
+            + checkpoint_store.SCHEMA
+            + GRAPH_SCHEMA
+            + temporal_repository.SCHEMA
+            + risk_repository.SCHEMA
+            + memory_repository.SCHEMA
+            + legal_holds.SCHEMA
+        )
+        db.execute("BEGIN IMMEDIATE")
+        evidence_store.split_owned_payloads(db)
 
     @contextmanager
     def connect(self):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys = ON")
+            if self._transient:
+                db.execute("PRAGMA temp_store = MEMORY")
+                self._initialize(db)
             yield db
 
     def _tenant(self) -> UUID:
