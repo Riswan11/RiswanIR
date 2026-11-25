@@ -69,6 +69,13 @@ class RegisteredCredentialBroker:
             if lease.expires_at <= self._service.clock():
                 raise AccessDenied
             self._service._audit(
-                context, integration_id, "credential.lease.issued", "success", "ISSUED"
+                context,
+                integration_id,
+                "credential.lease.issued",
+                "success",
+                "ISSUED",
+                provider_instance_id=registered.instance_id,
+                integration_id=integration_id,
+                target_cloud=registered.request.resource.namespace.cloud,
             )
             return lease

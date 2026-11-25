@@ -67,6 +67,8 @@ class SecretAPI:
         if operation == ("PATCH", None):
             request_update = Update.model_validate(Application.body(env))
             return 200, s.update(key, request_update).model_dump(mode="json")
+        if operation == ("POST", "/bind-provider"):
+            return 200, s.bind_existing(key).model_dump(mode="json")
         if operation == ("GET", "/versions"):
             return 200, [item.model_dump(mode="json") for item in s.versions(key)]
         if operation == ("POST", "/rotate"):

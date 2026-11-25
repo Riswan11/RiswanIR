@@ -608,3 +608,134 @@ def test_secret_api_separates_tenants_and_never_returns_material(tmp_path, runti
     assert send(path + "/revoke", "POST")[1]["status"] == "revoked"
     assert send(path, "DELETE")[1]["status"] == "pending_deletion"
     assert send(path + "/confirm-deletion", "POST")[1]["status"] == "deleted"
+
+
+def test_hosted_aws_collection_uses_registered_workload_and_preserves_ownership(
+    tmp_path, runtime, settings, monkeypatch
+):
+    from datetime import UTC
+    from unittest.mock import Mock
+    from uuid import uuid4
+
+    from riswan_app import hosted_collection
+    from riswan_app.credential_broker import AWSSTS
+    from riswan_app.secrets import Secrets
+    from riswan_platform.secrets import CredentialLease
+
+    previous, identities, _ = runtime
+    identity_app = previous
+    alice, _ = login(identity_app, "alice")
+    bearer = "Bearer test-workload-token"
+    worker = call(identity_app, "/v1/identity/me", authorization=bearer)[2]["identity_id"]
+    control = AuthorizationRepository(tmp_path / "control.sqlite3")
+    tenancy = Tenancy(control, identities.is_active_human, identities.is_active_workload)
+    store = Store(tmp_path / "hosted.sqlite3", hosted=True)
+    service = Secrets(tenancy, None, environment="production")
+    product = HostedProduct(tenancy, store)
+    app = IdentityApplication(
+        previous.service, authenticated_routes=TenantAPI(tenancy, product, settings.origin)
+    )
+    _, _, organization = call(
+        app,
+        "/v1/organizations",
+        "POST",
+        cookie=alice,
+        origin=settings.origin,
+        payload={"name": "Hosted"},
+    )
+    org_path = f"/v1/organizations/{organization['id']}"
+    assert (
+        call(
+            app,
+            org_path + "/workloads",
+            "POST",
+            cookie=alice,
+            origin=settings.origin,
+            payload={"identity_id": worker},
+        )[0]
+        == 204
+    )
+    membership = call(app, org_path + "/members", cookie=alice)[2]
+    joined = next(item["joined_at"] for item in membership if item["identity_id"] == worker)
+    key, instance = str(uuid4()), str(uuid4())
+    config = tmp_path / "integrations.json"
+    config.write_text(
+        json.dumps(
+            [
+                {
+                    "integration_id": key,
+                    "instance_id": instance,
+                    "tenant_id": organization["tenant_id"],
+                    "workload_id": worker,
+                    "membership_joined": joined,
+                    "namespace": {
+                        "partition": "aws",
+                        "account": "123456789012",
+                        "region": "us-east-1",
+                    },
+                    "connector": {
+                        "kind": "cloudtrail",
+                        "principal": "arn:aws:iam::123456789012:user/user",
+                        "account": {
+                            "account_id": "123456789012",
+                            "region": "us-east-1",
+                            "role_arn": "arn:aws:iam::123456789012:role/Collect",
+                            "external_id": "synthetic-external",
+                        },
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    sdk = Mock()
+    sdk.client.return_value.lookup_events.return_value = {
+        "Events": [
+            {
+                "CloudTrailEvent": json.dumps(
+                    {
+                        "eventID": "event-1",
+                        "eventTime": datetime.now(UTC).isoformat(),
+                        "eventSource": "s3.amazonaws.com",
+                        "eventName": "GetObject",
+                        "awsRegion": "us-east-1",
+                        "recipientAccountId": "123456789012",
+                        "userIdentity": {"arn": "arn:aws:iam::123456789012:user/user"},
+                    }
+                )
+            }
+        ]
+    }
+    issue = Mock(
+        return_value=(
+            sdk,
+            CredentialLease(id=uuid4(), expires_at=datetime.now(UTC) + timedelta(minutes=15)),
+        )
+    )
+    monkeypatch.setattr(AWSSTS, "session", issue)
+    route = hosted_collection.CollectionAPI(
+        service, hosted_collection.load_collections(config, service, store)
+    )
+    app = IdentityApplication(
+        previous.service,
+        authenticated_routes=TenantAPI(tenancy, product, settings.origin, collections=route),
+    )
+    endpoint = f"/v1/integrations/{key}/collect"
+    tenant = organization["tenant_id"]
+    assert (
+        call(app, endpoint, "POST", cookie=alice, origin=settings.origin, tenant=tenant)[0] == 404
+    )
+    assert call(app, endpoint, "POST", authorization=bearer, tenant=str(uuid4()))[0] == 404
+    issue.assert_not_called()
+    assert call(app, endpoint, "POST", authorization=bearer, tenant=tenant)[0] == 204
+    issue.assert_called_once()
+    listing = call(app, "/v1/investigations", cookie=alice, tenant=tenant)[2]
+    assert len(listing) == 1
+    assert store.owned_investigations(UUID(tenant))[listing[0]["id"]] == UUID(worker)
+    assert (
+        call(app, org_path + "/members/" + worker, "DELETE", cookie=alice, origin=settings.origin)[
+            0
+        ]
+        == 204
+    )
+    assert call(app, endpoint, "POST", authorization=bearer, tenant=tenant)[0] == 404

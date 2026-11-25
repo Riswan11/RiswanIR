@@ -363,3 +363,108 @@ def test_registered_broker_authorizes_before_resolving_provider(secrets):
     principal, context = contexts(service, worker, org)
     with principal, context, pytest.raises(AccessDenied):
         broker.execute(request.integration_id, "collect")
+
+
+def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets):
+    from riswan_app.secret_routing import SecretDestination, SecretRouting
+    from riswan_platform.secrets.providers import AWSNamespace, Binding, Capability, Entry, Registry
+
+    service, owner, _, org, _ = secrets
+    service.provider.name = "aws-secrets-manager"
+    request = Registration(id=uuid4(), name="Legacy", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        legacy = service.register(request)
+    assert legacy.provider_instance_id is None
+    with service.repository.atomic() as db:
+        db.execute(
+            "UPDATE secret_metadata SET metadata = json_remove(metadata, '$.provider_instance_id') WHERE id = ?",
+            (str(legacy.id),),
+        )
+    namespace = AWSNamespace(partition="aws", account="123456789012", region="us-east-1")
+    binding = Binding(
+        instance_id=uuid4(),
+        tenant_id=org.tenant_id,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.SECRET_READ, Capability.SECRET_WRITE, Capability.SECRET_DELETE},
+    )
+    destination = SecretDestination(binding.instance_id, namespace)
+    routing = SecretRouting(
+        Registry([Entry(binding, service.provider)], environment="test"),
+        {(org.tenant_id, "ir"): destination},
+    )
+    configured = Secrets(service.tenancy, None, environment="test", routing=routing)
+    principal, context = contexts(configured, owner, org)
+    with principal, context:
+        migrated = configured.bind_existing(legacy.id)
+        assert migrated.provider_instance_id == binding.instance_id
+        assert migrated.current_version == legacy.current_version
+        assert (
+            configured.rotate(
+                legacy.id, RotationRequest(operation_id=uuid4(), value="second")
+            ).provider_instance_id
+            == binding.instance_id
+        )
+
+
+def test_native_rotation_retry_reconciles_ambiguous_write_without_replay(secrets):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from riswan_app.native_secret_slots import AzureSlots
+    from riswan_app.secret_routing import SecretDestination, SecretRouting
+    from riswan_platform.secrets.providers import (
+        AzureNamespace,
+        Binding,
+        Capability,
+        Entry,
+        Registry,
+    )
+
+    service, owner, _, org, _ = secrets
+
+    class Missing(Exception):
+        pass
+
+    client = Mock()
+    records = {}
+
+    def get(name, version=None):
+        if name not in records:
+            raise Missing
+        if version is not None:
+            assert records[name].properties.version == version
+        return records[name]
+
+    def write(name, value):
+        records[name] = SimpleNamespace(value=value, properties=SimpleNamespace(version="native-1"))
+        raise TimeoutError(VALUE)
+
+    client.get_secret.side_effect = get
+    client.set_secret.side_effect = write
+    provider = AzureSlots(client, Missing)
+    namespace = AzureNamespace(directory_id=uuid4(), subscription_id=uuid4(), vault="synthetic")
+    binding = Binding(
+        instance_id=uuid4(),
+        tenant_id=org.tenant_id,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.SECRET_READ, Capability.SECRET_WRITE, Capability.SECRET_DELETE},
+    )
+    routing = SecretRouting(
+        Registry([Entry(binding, provider)], environment="test"),
+        {(org.tenant_id, "ir"): SecretDestination(binding.instance_id, namespace)},
+    )
+    configured = Secrets(service.tenancy, None, environment="test", routing=routing)
+    principal, context = contexts(configured, owner, org)
+    request = Registration(id=uuid4(), name="Native", kind="api_key", value=VALUE)
+    with principal, context:
+        with pytest.raises(ProviderUnavailable):
+            configured.register(request)
+        assert configured.metadata(request.id).status == "created"
+        active = configured.register(request)
+        assert active.provider_instance_id == binding.instance_id
+        assert configured.versions(request.id)[0].native_version == "native-1"
+    client.set_secret.assert_called_once()
+    assert VALUE.encode() not in service.repository.path.read_bytes()

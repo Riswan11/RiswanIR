@@ -3,7 +3,7 @@
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Protocol, TypeVar
+from typing import Annotated, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, StringConstraints
@@ -68,6 +68,7 @@ class SecretMetadata(Model):
     kind: Kind
     scope: Scope
     provider: str
+    provider_instance_id: UUID | None = None
     status: Status
     current_version: UUID | None = None
     created_by: UUID
@@ -106,6 +107,7 @@ class SecretVersion(Model):
     id: UUID
     created_at: AwareDatetime
     state: str
+    native_version: str | None = None
 
 
 class RotationOperation(Model):
@@ -114,6 +116,7 @@ class RotationOperation(Model):
     state: str
     started_at: AwareDatetime
     base_version: UUID | None = None
+    write_attempted: bool = False
 
 
 class SecretAccessPolicy(Model):
@@ -135,6 +138,9 @@ class SecretAccessEvent(Model):
     outcome: str
     reason: str
     occurred_at: AwareDatetime
+    provider_instance_id: UUID | None = None
+    integration_id: UUID | None = None
+    target_cloud: str | None = None
 
 
 class CredentialLease(Model):
@@ -146,10 +152,16 @@ class SecretProvider(Protocol):
     name: str
     development_only: bool
 
-    def put(self, key: str, material: SecretMaterial) -> None: ...
+    def put(self, key: str, material: SecretMaterial) -> str | None: ...
     def get(self, key: str) -> SecretMaterial: ...
     def schedule_delete(self, key: str) -> None: ...
     def deleted(self, key: str) -> bool: ...
+
+
+@runtime_checkable
+class NativeSlotProvider(Protocol):
+    def get_version(self, key: str, version: str | None) -> SecretMaterial: ...
+    def recover_version(self, key: str) -> str: ...
 
 
 class CredentialConsumer(Protocol):

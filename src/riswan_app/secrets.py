@@ -18,6 +18,7 @@ from riswan_platform.core.context import PlatformContext, require_context
 from riswan_platform.identity.models import IdentityType
 from riswan_platform.identity.principal import require_principal
 from riswan_platform.secrets import (
+    NativeSlotProvider,
     ProviderUnavailable,
     Registration,
     Result,
@@ -37,7 +38,9 @@ from riswan_platform.secrets import (
     validate_expiry,
 )
 from riswan_platform.secrets import Scope as SecretScope
+from riswan_platform.secrets.providers import Capability
 
+from .secret_routing import SecretRouting
 from .tenancy import Tenancy
 
 SCHEMA = """
@@ -69,19 +72,22 @@ class Secrets:
     def __init__(
         self,
         tenancy: Tenancy,
-        provider: SecretProvider,
+        provider: SecretProvider | None,
         *,
         environment: str,
+        routing: SecretRouting | None = None,
         validate: Callable[[SecretMetadata, SecretMaterial], bool] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         if environment not in {"development", "test", "production"} or (
-            environment == "production" and provider.development_only
+            environment == "production" and provider is not None and provider.development_only
         ):
             raise ValueError("Secret provider is not permitted in this environment.")
         self.tenancy = tenancy
         self.repository = tenancy.authorization
         self.provider = provider
+        self.routing = routing
+        self.environment = environment
         self._validate = validate
         self.clock = clock
         with self.repository.atomic() as db:
@@ -90,7 +96,16 @@ class Secrets:
                     db.execute(statement)
 
     def _audit(
-        self, context: PlatformContext, key: UUID, action: str, outcome: str, reason: str
+        self,
+        context: PlatformContext,
+        key: UUID,
+        action: str,
+        outcome: str,
+        reason: str,
+        *,
+        provider_instance_id: UUID | None = None,
+        integration_id: UUID | None = None,
+        target_cloud: str | None = None,
     ) -> None:
         event = SecretAccessEvent(
             id=uuid4(),
@@ -105,6 +120,9 @@ class Secrets:
             outcome=outcome,
             reason=reason,
             occurred_at=self.clock(),
+            provider_instance_id=provider_instance_id,
+            integration_id=integration_id,
+            target_cloud=target_cloud,
         )
         with self.repository._connection() as db:
             db.execute(
@@ -165,13 +183,63 @@ class Secrets:
         if row is None:
             raise AccessDenied
         item = SecretMetadata.model_validate_json(row[0])
-        if item.provider != self.provider.name:
-            raise ProviderUnavailable("Configured provider does not own this credential.")
         return item
+
+    def _provider(self, item: SecretMetadata, capability: Capability) -> SecretProvider:
+        if item.provider_instance_id is not None:
+            if self.routing is None:
+                raise ProviderUnavailable("Secret provider binding unavailable.")
+            provider = self.routing.provider(item, capability)
+        else:
+            if self.provider is None or item.provider != self.provider.name:
+                raise ProviderUnavailable("Configured provider does not own this credential.")
+            provider = self.provider
+        if self.environment == "production" and provider.development_only:
+            raise ProviderUnavailable("Secret provider unavailable in this environment.")
+        return provider
+
+    def bind_existing(self, key: UUID) -> SecretMetadata:
+        with self._operation(key, Permission.SECRET_UPDATE, "secret.provider.bound") as context:
+            item = self._load(context, key)
+            destination = (
+                self.routing.destination(context.tenant_id, context.product_id)
+                if self.routing
+                else None
+            )
+            if not destination or not self.routing or item.provider_instance_id is not None:
+                raise AccessDenied
+            provider = self.routing.resolve(
+                context.tenant_id,
+                context.product_id,
+                destination.instance_id,
+                Capability.SECRET_READ,
+            )
+            # AWS references are deterministic. Verify existing material is available at the new binding.
+            if (
+                provider.name != "aws-secrets-manager"
+                or provider.name != item.provider
+                or not item.current_version
+            ):
+                raise AccessDenied
+            provider.get(self._key(item, item.current_version))
+            bound = item.model_copy(
+                update={"provider_instance_id": destination.instance_id, "updated_at": self.clock()}
+            )
+            with self.repository.atomic() as db:
+                self._save(db, bound)
+            return bound
 
     @staticmethod
     def _key(item: SecretMetadata, version: UUID) -> str:
         return f"riswan/{item.tenant_id.hex}/{item.id.hex}/{version.hex}"
+
+    def _read_version(self, item: SecretMetadata, version: SecretVersion) -> SecretMaterial:
+        provider = self._provider(item, Capability.SECRET_READ)
+        if isinstance(provider, NativeSlotProvider):
+            if version.native_version is None:
+                raise ProviderUnavailable("Native secret version unavailable.")
+            return provider.get_version(self._key(item, version.id), version.native_version)
+        return provider.get(self._key(item, version.id))
 
     def _save(self, db, item: SecretMetadata) -> None:
         db.execute(
@@ -194,6 +262,23 @@ class Secrets:
         with self._operation(request.id, Permission.SECRET_CREATE, "secret.created") as context:
             now = self.clock()
             validate_expiry(request.expires_at, now)
+            destination = (
+                self.routing.destination(context.tenant_id, context.product_id)
+                if self.routing
+                else None
+            )
+            selected = (
+                self.routing.resolve(
+                    context.tenant_id,
+                    context.product_id,
+                    destination.instance_id,
+                    Capability.SECRET_WRITE,
+                )
+                if self.routing and destination
+                else self.provider
+            )
+            if selected is None or (self.environment == "production" and selected.development_only):
+                raise ProviderUnavailable("Secret provider unavailable.")
             item = SecretMetadata(
                 id=request.id,
                 tenant_id=context.tenant_id,
@@ -202,7 +287,8 @@ class Secrets:
                 name=request.name,
                 kind=request.kind,
                 scope=SecretScope.PRODUCT,
-                provider=self.provider.name,
+                provider=selected.name,
+                provider_instance_id=destination.instance_id if destination else None,
                 status=Status.CREATED,
                 created_by=UUID(context.actor_id),
                 created_at=now,
@@ -258,6 +344,22 @@ class Secrets:
     def _publish(
         self, key: UUID, request: RotationRequest, permission: Permission
     ) -> SecretMetadata:
+        recover = False
+        with self._operation(key, permission, "secret.rotation.write_reserved") as context:
+            item = self._load(context, key)
+            operation = self._stage(item, request.operation_id)
+            if operation.state == "completed":
+                return item
+            if operation.base_version != item.current_version:
+                raise SecretError("Credential version changed before promotion.")
+            if isinstance(self._provider(item, Capability.SECRET_WRITE), NativeSlotProvider):
+                recover = operation.write_attempted
+                with self.repository.atomic() as db:
+                    updated = operation.model_copy(update={"write_attempted": True})
+                    db.execute(
+                        "UPDATE secret_rotations SET operation = ? WHERE secret_id = ? AND id = ?",
+                        (updated.model_dump_json(), str(item.id), str(operation.id)),
+                    )
         with self._operation(key, permission, "secret.rotation.completed") as context:
             item = self._load(context, key)
             operation = self._stage(item, request.operation_id)
@@ -265,7 +367,7 @@ class Secrets:
                 return item
             if operation.base_version != item.current_version:
                 raise SecretError("Credential version changed before promotion.")
-            return self._activate(context, item, request, operation)
+            return self._activate(context, item, request, operation, recover=recover)
 
     def _activate(
         self,
@@ -273,6 +375,8 @@ class Secrets:
         item: SecretMetadata,
         request: RotationRequest,
         operation: RotationOperation,
+        *,
+        recover: bool,
     ) -> SecretMetadata:
         now = self.clock()
         with self.repository._connection() as db:
@@ -281,8 +385,14 @@ class Secrets:
         try:
             self._validate_material(item, request)
             provider_key = self._key(item, version.id)
-            self.provider.put(provider_key, request)
-            if checked_material(self.provider.get(provider_key)) != checked_material(request):
+            provider = self._provider(item, Capability.SECRET_WRITE)
+            native = (
+                provider.recover_version(provider_key)
+                if recover and isinstance(provider, NativeSlotProvider)
+                else provider.put(provider_key, request)
+            )
+            version = version.model_copy(update={"native_version": native})
+            if checked_material(self._read_version(item, version)) != checked_material(request):
                 raise ProviderUnavailable("Credential verification failed.")
         except SecretError:
             self._finish_rotation(operation, "failed")
@@ -308,7 +418,14 @@ class Secrets:
             )
             self._save(db, item)
             self._finish_rotation(operation, "completed")
-            self._audit(context, item.id, "secret.version.created", "success", "COMPLETED")
+            self._audit(
+                context,
+                item.id,
+                "secret.version.created",
+                "success",
+                "COMPLETED",
+                provider_instance_id=item.provider_instance_id,
+            )
         return item
 
     def _finish_rotation(self, operation: RotationOperation, state: str) -> None:
@@ -456,7 +573,9 @@ class Secrets:
             if row is None or SecretAccessPolicy.model_validate_json(row[0]).expires_at <= now:
                 raise AccessDenied
             try:
-                return consume(self.provider.get(self._key(item, item.current_version)))
+                with self.repository._connection() as db:
+                    version = self._version(db, item.id, item.current_version)
+                return consume(self._read_version(item, version))
             except Exception:
                 raise ProviderUnavailable("Credential use failed.") from None
 
@@ -494,8 +613,13 @@ class Secrets:
                     )
                     self._save(db, item)
                     for version in versions:
-                        self.provider.schedule_delete(self._key(item, version))
-                elif all(self.provider.deleted(self._key(item, version)) for version in versions):
+                        self._provider(item, Capability.SECRET_DELETE).schedule_delete(
+                            self._key(item, version)
+                        )
+                elif all(
+                    self._provider(item, Capability.SECRET_DELETE).deleted(self._key(item, version))
+                    for version in versions
+                ):
                     item = item.model_copy(
                         update={
                             "status": Status.DELETED,
@@ -532,7 +656,7 @@ class Secrets:
                 version = self._version(db, key, version_id)
                 if version.state != "retired":
                     raise AccessDenied
-                material = self.provider.get(self._key(item, version_id))
+                material = self._read_version(item, version)
                 self._validate_material(item, material)
                 current = self._version(db, key, item.current_version)
                 self._set_version(db, key, current.model_copy(update={"state": "retired"}))

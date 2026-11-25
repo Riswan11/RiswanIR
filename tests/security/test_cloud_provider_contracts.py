@@ -287,3 +287,72 @@ def test_federation_factories_bind_sdk_endpoints_and_audiences(cloud, monkeypatc
                 perform,
                 service_account="worker@other.iam.gserviceaccount.com",
             )
+
+
+def test_google_managed_slot_reuses_native_version_and_requires_delayed_destruction():
+    from datetime import timedelta
+
+    from riswan_app.native_secret_slots import GoogleSlots
+    from riswan_platform.secrets import SecretMaterial
+
+    class Missing(Exception):
+        pass
+
+    class Exists(Exception):
+        pass
+
+    client = Mock()
+    provider = GoogleSlots(client, "test-project", Missing, Exists)
+    key = "test-slot"
+    parent = provider.key(key)
+    record = SimpleNamespace(name=f"{parent}/versions/1", state=SimpleNamespace(name="ENABLED"))
+    client.add_secret_version.return_value = record
+    client.access_secret_version.return_value = SimpleNamespace(
+        payload=SimpleNamespace(data=b"synthetic")
+    )
+    client.list_secret_versions.return_value = [record]
+    material = SecretMaterial(value="synthetic")
+    assert provider.put(key, material) == "1"
+    assert client.create_secret.call_args.kwargs["request"]["secret"]["version_destroy_ttl"] == {
+        "seconds": 604800
+    }
+    client.create_secret.side_effect = Exists
+    assert provider.put(key, material) == "1"
+    assert provider.recover_version(key) == "1"
+    client.add_secret_version.assert_called_once()
+    assert provider.get(key).value == material.value
+    assert not provider.deleted(key)
+    client.get_secret.return_value = SimpleNamespace(version_destroy_ttl=timedelta())
+    with pytest.raises(ProviderUnavailable):
+        provider.schedule_delete(key)
+    client.destroy_secret_version.assert_not_called()
+    client.get_secret.return_value.version_destroy_ttl = timedelta(days=7)
+    provider.schedule_delete(key)
+    client.destroy_secret_version.assert_called_once()
+    record.state.name = "DESTROYED"
+    assert provider.deleted(key)
+
+
+def test_config_loader_rejects_duplicate_destinations(tmp_path, monkeypatch):
+    import json
+
+    from riswan_app import cloud_storage_config
+    from riswan_app.secret_providers import MemoryProvider
+
+    config = tmp_path / "providers.json"
+    tenant = uuid4()
+    instance = uuid4()
+    entry = {
+        "tenant_id": str(tenant),
+        "instance_id": str(instance),
+        "storage": {"cloud": "gcp", "namespace": {"project": "test-project", "location": "global"}},
+    }
+    provider = MemoryProvider()
+    provider.development_only = False
+    monkeypatch.setattr(cloud_storage_config, "_provider", lambda _: provider)
+    config.write_text(json.dumps([entry]), encoding="utf-8")
+    routing = cloud_storage_config.load_secret_routing(config)
+    assert routing.resolve(tenant, "ir", instance, Capability.SECRET_READ) == provider
+    config.write_text(json.dumps([entry, entry]), encoding="utf-8")
+    with pytest.raises(ValueError, match="one active"):
+        cloud_storage_config.load_secret_routing(config)
