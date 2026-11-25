@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from wsgiref.validate import validator
 
@@ -22,11 +23,12 @@ class InvestigationWorkflow(unittest.TestCase):
             "requestParameters": {"userName": "test", "secret": "omit-me"},
         }]}
 
-    def request(self, method, path, obj=None):
-        data = json.dumps(obj).encode() if obj is not None else b""
+    def request(self, method, path, obj=None, *, host="localhost:8000", raw=None):
+        data = raw if raw is not None else json.dumps(obj).encode() if obj is not None else b""
         env = {
             "REQUEST_METHOD": method, "SCRIPT_NAME": "", "PATH_INFO": path, "QUERY_STRING": "",
             "SERVER_NAME": "localhost", "SERVER_PORT": "8000", "SERVER_PROTOCOL": "HTTP/1.1",
+            "HTTP_HOST": host,
             "CONTENT_LENGTH": str(len(data)), "CONTENT_TYPE": "application/json",
             "wsgi.url_scheme": "http", "wsgi.version": (1, 0),
             "wsgi.input": io.BytesIO(data), "wsgi.errors": io.StringIO(),
@@ -38,7 +40,7 @@ class InvestigationWorkflow(unittest.TestCase):
             body = b"".join(response)
         finally:
             response.close()
-        return statuses[0], json.loads(body) if path != "/" else body
+        return statuses[0], body if path == "/" and statuses[0] == 200 else json.loads(body)
 
     def test_full_workflow(self):
         self.assertIn(b"CloudTrail investigation workspace", self.request("GET", "/")[1])
@@ -71,3 +73,18 @@ class InvestigationWorkflow(unittest.TestCase):
         self.finding["records"].append({**record, "eventName": "AssumeRole"})
         self.assertEqual(self.request("POST", base, self.finding)[0], 400)
         self.assertEqual(self.request("POST", base, {"title": "Missing records"})[0], 400)
+
+    def test_host_validation(self):
+        for host in ("attacker.example", "localhost.attacker.example", "localhost@attacker.example", "", "localhost,localhost"):
+            with self.subTest(host=host):
+                self.assertEqual(self.request("GET", "/", host=host)[0], 400)
+        self.assertEqual(self.request("GET", "/", host="127.0.0.1:8000")[0], 200)
+
+    def test_json_error_paths(self):
+        base = "/v1/investigations"
+        for raw in (b"{", b"[]", b'{"x":"\xff"}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.request("POST", base, raw=raw)[0], 400)
+        self.assertEqual(self.request("GET", base + "/" + "0" * 32)[0], 404)
+        with patch.object(Store, "list", side_effect=KeyError("private details")), self.assertLogs("server", level="ERROR"):
+            self.assertEqual(self.request("GET", base), (500, {"error": "Internal server error."}))

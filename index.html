@@ -89,8 +89,17 @@ function render(report) {
   add(panel, "h3", `${risk.severity.toUpperCase()} · ${risk.score}/${risk.score_max} triage score`);
   list(panel, "Evidence-backed findings", risk.claims.map(claim =>
     `${claim.summary} [${claim.evidence_ids.join(", ")}]${claim.possible_attack_technique ? " · Possible " + claim.possible_attack_technique : ""}`));
-  list(panel, "Timeline", report.evidence.map(item =>
-    `${item.observed_at} · ${item.event} · ${item.target ?? "Target unavailable"} [${item.id}]`));
+  add(panel, "h3", "Timeline");
+  if (!report.evidence.length) add(panel, "p", "No matching events.");
+  const timeline = add(panel, "ol", "");
+  for (const item of report.evidence) {
+    const entry = add(timeline, "li", "");
+    add(entry, "strong", `${item.observed_at} · ${item.operation ?? item.event} [${item.id}]`);
+    add(entry, "div", `Principal: ${item.principal ?? "Unavailable"} · Target: ${item.target ?? "Unavailable"}`);
+    add(entry, "div", `Source IP: ${item.source_ip ?? "Unavailable"} · Region: ${item.region ?? "Unavailable"} · Caller account: ${item.account_id ?? "Unavailable"} · Recipient account: ${item.recipient_account_id ?? "Unavailable"}`);
+    add(entry, "div", `User agent: ${item.user_agent ?? "Unavailable"}`);
+    if (item.linked_from_evidence_id) add(entry, "div", `Credential issued in event ${item.linked_from_evidence_id}`);
+  }
   list(panel, "Open questions", risk.open_questions);
   list(panel, "Related reviewed investigations", report.similar_investigations.map(item =>
     `${item.title} · ${item.disposition} · ${item.shared_events.join(", ")}`));
@@ -129,8 +138,7 @@ async function refresh() {
 }
 intake.onsubmit = run(async () => {
   const body = Object.fromEntries(new FormData(intake));
-  const input = JSON.parse(body.records);
-  body.records = Array.isArray(input) ? input : input?.Records;
+  body.records = JSON.parse(body.records);
   render(await api(base, body));
   await refresh();
 });
@@ -140,15 +148,26 @@ review.onsubmit = run(async () => {
 });
 byId("sample").onclick = () => {
   const arn = "arn:aws:iam::123456789012:user/build-service";
+  const role = "arn:aws:sts::123456789012:assumed-role/ExampleRole/build";
+  const sessionKey = "ASIAEXAMPLESESSION";
+  const createdKey = "AKIAEXAMPLECREATED";
   intake.elements.title.value = "Unexpected build service activity";
   intake.elements.principal.value = arn;
   intake.elements.records.value = JSON.stringify({Records: [
-    ["AssumeRole", {roleArn: "arn:aws:iam::123456789012:role/ExampleRole"}],
-    ["GetObject", {bucketName: "example-finance-bucket"}],
-    ["CreateAccessKey", {userName: "build-service"}],
-  ].map(([eventName, requestParameters], index) => ({
+    ["AssumeRole", {arn}, {roleArn: "arn:aws:iam::123456789012:role/ExampleRole"}, {
+      credentials: {accessKeyId: sessionKey, expiration: "2025-01-01T04:00:00Z"},
+      assumedRoleUser: {arn: role},
+    }],
+    ["CreateAccessKey", {arn: role, accessKeyId: sessionKey}, {userName: "build-service"}, {
+      accessKey: {accessKeyId: createdKey},
+    }],
+    ["GetObject", {arn, accessKeyId: createdKey}, {bucketName: "example-finance-bucket"}, null],
+  ].map(([eventName, identity, requestParameters, responseElements], index) => ({
     eventID: `sample-${index + 1}`, eventTime: `2025-01-01T03:1${index}:00Z`,
-    eventName, requestParameters, userIdentity: {arn},
+    eventName, requestParameters, responseElements,
+    userIdentity: {...identity, accountId: "123456789012"},
+    recipientAccountId: "123456789012", awsRegion: "us-east-1",
+    sourceIPAddress: "203.0.113.64", userAgent: "aws-cli/2.0",
   }))}, null, 2);
 };
 run(refresh)();

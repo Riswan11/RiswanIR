@@ -8,12 +8,21 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 
-RULES = {
-    "AssumeRole": (20, "Role assumption observed", "T1078"),
-    "GetObject": (20, "Successful object read recorded", None),
-    "CreateAccessKey": (15, "Access key creation recorded", "T1098.001"),
-    "AttachUserPolicy": (15, "User policy attachment recorded", "T1098"),
-}
+RULES = (
+    ("role-assumption", 20, "Role assumption observed", "T1078", ("AssumeRole",), 1),
+    ("object-read", 20, "Successful object read recorded", None, ("GetObject",), 1),
+    ("key-creation", 15, "Access key creation recorded", "T1098.001", ("CreateAccessKey",), 1),
+    ("policy-attachment", 15, "User policy attachment recorded", "T1098", ("AttachUserPolicy",), 1),
+    ("repeated-key-creation", 10, "Multiple access key creations recorded", "T1098.001", ("CreateAccessKey",), 2),
+    ("role-then-key", 20, "Access key created downstream of a role assumption", "T1098.001",
+     ("AssumeRole", "CreateAccessKey"), 1),
+)
+
+ROLE_CALLS = {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity"}
+
+
+class NotFoundError(LookupError):
+    pass
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS investigations (
@@ -47,70 +56,171 @@ def mapping(data, key):
     return value if isinstance(value, dict) else {}
 
 
-def normalize(event, principal):
+def text_field(data, name, limit=300):
+    value = data.get(name)
+    return value[:limit] if isinstance(value, str) and value else None
+
+
+def utc_timestamp(value):
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.utcoffset() is None:
+        raise ValueError("CloudTrail eventTime must include a timezone.")
+    return timestamp.astimezone(timezone.utc)
+
+
+def normalize(event):
     if not isinstance(event, dict):
         raise ValueError("Each CloudTrail record must be an object.")
     identity = mapping(event, "userIdentity")
-    if identity.get("arn") != principal or event.get("errorCode"):
-        return None
     event_id = required(event, "eventID")
-    timestamp = datetime.fromisoformat(required(event, "eventTime").replace("Z", "+00:00"))
-    if timestamp.utcoffset() is None:
-        raise ValueError("CloudTrail eventTime must include a timezone.")
+    timestamp = utc_timestamp(required(event, "eventTime"))
     name = required(event, "eventName")
     params = mapping(event, "requestParameters")
     allowed_targets = {
-        "AssumeRole": "roleArn",
+        **dict.fromkeys(ROLE_CALLS, "roleArn"),
         "GetObject": "bucketName",
         "CreateAccessKey": "userName",
         "AttachUserPolicy": "policyArn",
     }
-    target = params.get(allowed_targets.get(name))
-    normalized = {
+    return {
         "id": event_id,
         "source": "aws.cloudtrail",
-        "observed_at": timestamp.astimezone(timezone.utc).isoformat(),
-        "event": name,
-        "principal": principal,
-        "target": target[:300] if isinstance(target, str) else None,
-        "query": "Exact principal ARN match against supplied CloudTrail records",
+        "observed_at": timestamp.isoformat(timespec="microseconds"),
+        "event": "AssumeRole" if name in ROLE_CALLS else name,
+        "operation": name,
+        "principal": text_field(identity, "arn"),
+        "target": text_field(params, allowed_targets.get(name)),
+        "source_ip": text_field(event, "sourceIPAddress"),
+        "user_agent": text_field(event, "userAgent", 1024),
+        "region": text_field(event, "awsRegion"),
+        "account_id": text_field(identity, "accountId"),
+        "recipient_account_id": text_field(event, "recipientAccountId"),
     }
-    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
-    return {**normalized, "integrity_hash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()}
+
+
+def issued_credential(event, item):
+    response = mapping(event, "responseElements")
+    if item["event"] == "AssumeRole" and event.get("eventSource", "sts.amazonaws.com") == "sts.amazonaws.com":
+        credentials = mapping(response, "credentials")
+        expiry = text_field(credentials, "expiration")
+        expires_at = None
+        if expiry:
+            try:
+                expires_at = utc_timestamp(expiry)
+            except ValueError:
+                try:
+                    expires_at = datetime.strptime(expiry, "%b %d, %Y %I:%M:%S %p").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+        return (text_field(credentials, "accessKeyId"),
+                text_field(mapping(response, "assumedRoleUser"), "arn"), expires_at)
+    if item["event"] == "CreateAccessKey" and event.get("eventSource", "iam.amazonaws.com") == "iam.amazonaws.com":
+        return text_field(mapping(response, "accessKey"), "accessKeyId"), None, None
+    return None, None, None
+
+
+def correlate(records, principal):
+    unique = {}
+    for record in records:
+        item = normalize(record)
+        identity = mapping(record, "userIdentity")
+        row = (item, text_field(identity, "accessKeyId"), issued_credential(record, item), bool(record.get("errorCode")))
+        if unique.setdefault(item["id"], row) != row:
+            raise ValueError("Conflicting CloudTrail records share an eventID.")
+    ordered = sorted(unique.values(), key=lambda row: (row[0]["observed_at"], row[0]["id"]))
+    evidence = []
+    issued = {}
+    for item, key, credential, failed in ordered:
+        if failed:
+            continue
+        parent = None
+        timestamp = utc_timestamp(item["observed_at"])
+        for origin, expected_arn, expires_at in issued.get(key, ()):
+            if origin["observed_at"] >= item["observed_at"]:
+                continue
+            if expected_arn and item["principal"] and expected_arn != item["principal"]:
+                continue
+            if expires_at and timestamp >= expires_at:
+                continue
+            parent = origin
+            break
+        if item["principal"] != principal and parent is None:
+            continue
+        item["query"] = "Issued access key match" if parent else "Exact principal ARN match"
+        item["linked_from_evidence_id"] = parent["id"] if parent else None
+        canonical = json.dumps(item, sort_keys=True, separators=(",", ":"))
+        item["integrity_hash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+        evidence.append(item)
+        issued_key, session_arn, expires_at = credential
+        if issued_key:
+            issued.setdefault(issued_key, []).append((item, session_arn, expires_at))
+    return evidence
+
+
+def rule_evidence(evidence, events, minimum):
+    if len(events) == 1:
+        ids = [item["id"] for item in evidence if item["event"] == events[0]]
+        return ids if len(ids) >= minimum else []
+    by_id = {item["id"]: item for item in evidence}
+    for item in evidence:
+        if item["event"] != events[-1]:
+            continue
+        matched = [item["id"]]
+        ancestor = item["linked_from_evidence_id"]
+        for event in reversed(events[:-1]):
+            while ancestor and by_id[ancestor]["event"] != event:
+                ancestor = by_id[ancestor]["linked_from_evidence_id"]
+            if not ancestor:
+                break
+            matched.append(ancestor)
+            ancestor = by_id[ancestor]["linked_from_evidence_id"]
+        if len(matched) == len(events):
+            return list(reversed(matched))
+    return []
+
+
+def export_records(records):
+    if isinstance(records, dict) and "Events" in records:
+        entries = records["Events"]
+        if not isinstance(entries, list) or len(entries) > 2000:
+            raise ValueError("Provide at most 2,000 CloudTrail lookup events.")
+        try:
+            return [json.loads(required(entry, "CloudTrailEvent", 8_000_000)) for entry in entries]
+        except json.JSONDecodeError as exc:
+            raise ValueError("Malformed CloudTrailEvent in lookup export.") from exc
+    return records.get("Records") if isinstance(records, dict) else records
 
 
 def analyze(data):
     title = required(data, "title")
     principal = required(data, "principal")
-    records = data.get("records")
+    records = export_records(data.get("records"))
     if not isinstance(records, list) or len(records) > 2000:
         raise ValueError("Provide a records array with at most 2,000 CloudTrail events.")
-    by_id = {}
-    for record in records:
-        item = normalize(record, principal)
-        if item:
-            previous = by_id.setdefault(item["id"], item)
-            if previous != item:
-                raise ValueError("Conflicting CloudTrail records share an eventID.")
-    evidence = sorted(by_id.values(), key=lambda item: (item["observed_at"], item["id"]))
+    evidence = correlate(records, principal)
     claims = []
     score = 0
-    for event, (weight, summary, technique) in RULES.items():
-        event_ids = [item["id"] for item in evidence if item["event"] == event]
+    for rule_id, weight, summary, technique, events, minimum in RULES:
+        event_ids = rule_evidence(evidence, events, minimum)
         if event_ids:
             score += weight
-            claims.append({"summary": summary, "evidence_ids": event_ids, "possible_attack_technique": technique})
+            claims.append({"rule_id": rule_id, "summary": summary, "evidence_ids": event_ids,
+                           "possible_attack_technique": technique})
     severity = "high" if score >= 50 else "medium" if score >= 25 else "low" if score else "unrated"
     targets = sorted({item["target"] for item in evidence if item["target"]})
     persistence = [item["id"] for item in evidence if item["event"] == "CreateAccessKey"]
     return {
         "title": title, "principal": principal,
-        "plan": ["Match the supplied events to the principal", "Correlate successful calls and review possible persistence"],
+        "plan": ["Match the supplied events to the principal", "Follow credentials issued by matching events"],
         "evidence": evidence,
-        "graph": [{"from": principal, "relationship": "CALLED", "to": item["id"]} for item in evidence]
-        + [{"from": item["id"], "relationship": "TARGETED", "to": item["target"]} for item in evidence if item["target"]],
-        "assessment": {"severity": severity, "score": score, "score_max": 70, "claims": claims,
-                       "open_questions": ["Was the activity authorized?", "What happened outside the supplied records?"],
+        "graph": [{"from": item["principal"], "relationship": "CALLED", "to": item["id"]}
+                  for item in evidence if item["principal"]]
+        + [{"from": item["id"], "relationship": "TARGETED", "to": item["target"]} for item in evidence if item["target"]]
+        + [{"from": item["linked_from_evidence_id"], "relationship": "ISSUED_CREDENTIAL_USED_IN", "to": item["id"]}
+           for item in evidence if item["linked_from_evidence_id"]],
+        "assessment": {"severity": severity, "score": score, "score_max": sum(rule[1] for rule in RULES), "claims": claims,
+                       "open_questions": ["Was the activity authorized?", "What happened outside the supplied records?",
+                                          "Were any credential identifiers or issuance events missing from the export?"],
                        "observed_targets": targets},
         "action": {"id": "review-access-key", "summary": "Verify the new key and its owners before considering containment.",
                    "mode": "advisory", "evidence_ids": persistence} if persistence else None,
@@ -141,7 +251,7 @@ class Store:
         with self.connect() as db:
             row = db.execute("SELECT report FROM investigations WHERE id = ?", (investigation_id,)).fetchone()
             if row is None:
-                raise LookupError("Investigation not found.")
+                raise NotFoundError("Investigation not found.")
             report = json.loads(row["report"])
             report["reviews"] = [dict(item) for item in db.execute(
                 "SELECT reviewer, disposition, notes, created_at FROM reviews WHERE investigation_id = ? ORDER BY id",
@@ -190,7 +300,7 @@ class Store:
     def decide(self, investigation_id, action_id, decision, data):
         action = self.get(investigation_id)["action"]
         if action is None or action["id"] != action_id:
-            raise LookupError("Action not found.")
+            raise NotFoundError("Action not found.")
         reviewer = required(data, "reviewer", 100)
         with self.connect() as db:
             result = db.execute("INSERT INTO decisions VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
