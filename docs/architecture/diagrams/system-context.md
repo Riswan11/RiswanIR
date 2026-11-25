@@ -7,7 +7,9 @@ flowchart LR
     subgraph Host["Operator workstation"]
         Browser -->|"Loopback HTTP"| App["SentinelForge process"]
         App <--> DB[("Local SQLite")]
+        Collector["Optional local AWS collector"] --> DB
     end
+    Collector <-->|"Read-only telemetry over TLS"| AWS
     Visitor["Portfolio visitor"] --> Demo["Public static demo"]
     Demo -->|"Simulated decisions"| LocalStorage[("Visitor browser storage")]
     Maintainer["Maintainer"] --> Repo["GitHub source repository"]

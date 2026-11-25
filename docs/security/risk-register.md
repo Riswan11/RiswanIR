@@ -20,6 +20,6 @@ Statuses describe review and treatment progress. Residual ratings come from the 
 | SF-14 | Cross-tenant exposure / Not applicable | Security maintainer | Future | Threat model and isolation tests required before tenant support. |
 | SF-15 | AI prompt injection, poisoning or disclosure / Not applicable | Security maintainer | Future | Review provider and data boundaries before model integration. |
 | SF-16 | Tool abuse or unauthorized execution / Not applicable | Response maintainer | Future | Require separate authorization and audit design before execution. |
-| SF-17 | Cloud credential exposure or out-of-scope collection / Not applicable | Connector maintainer | Future | Review least privilege and credential lifetime before connector rollout. |
+| SF-17 | AWS credential, scope or collection budget exposure / Medium | Connector maintainer | Open | Validate each role, bucket and workload budget in a dedicated sandbox before use. |
 
 For a new or changed risk, record the corresponding STRIDE ID, affected assets, existing controls, owner, treatment status, and review trigger. Record risk acceptance with rationale, scope, reviewer and expiry. Track private details through the process in [SECURITY.md](../../SECURITY.md).

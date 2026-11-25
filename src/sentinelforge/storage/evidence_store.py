@@ -64,10 +64,11 @@ def ingest(
             **dict(request.provenance),
             evidence_id=raw_id,
             source_event_id=event_id,
-            source_account_id=text_field(record, "recipientAccountId")
+            source_account_id=request.provenance.collection_account_id
+            or text_field(record, "recipientAccountId")
             or text_field(record, "recipientAccountID")
             or text_field(mapping(record, "userIdentity"), "accountId"),
-            source_region=text_field(record, "awsRegion"),
+            source_region=request.provenance.collection_region or text_field(record, "awsRegion"),
             observed_at=text_field(record, "eventTime"),
             ingested_at=timestamp,
             raw_integrity_hash=digest,

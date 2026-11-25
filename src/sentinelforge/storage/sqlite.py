@@ -22,7 +22,7 @@ from ..models import (
     InvestigationSummary,
 )
 from ..models.chain_of_custody import EvidenceIntegrity, EvidenceRetentionPolicy
-from . import evidence_store
+from . import checkpoint_store, evidence_store
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS investigations (
@@ -57,7 +57,7 @@ class Store:
             except FileExistsError:
                 pass
         with self.connect() as db:
-            db.executescript(SCHEMA + evidence_store.EVIDENCE_SCHEMA)
+            db.executescript(SCHEMA + evidence_store.EVIDENCE_SCHEMA + checkpoint_store.SCHEMA)
 
     @contextmanager
     def connect(self):
@@ -67,20 +67,24 @@ class Store:
             yield db
 
     def create(self, request: InvestigationRequest) -> InvestigationReport:
-        case_id, timestamp = uuid4().hex, now()
         with self.connect() as db:
-            db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
-            origins = evidence_store.ingest(db, case_id, request, timestamp)
-            result = analyze(request)
-            result.evidence = evidence_store.record_transformations(
-                db, case_id, request, timestamp, result.evidence, origins
-            )
-            report = InvestigationReport(id=case_id, created_at=timestamp, **dict(result))
-            db.execute(
-                "UPDATE investigations SET report = ? WHERE id = ?",
-                (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
-            )
+            case_id = self.create_in_transaction(db, request)
         return self.get(case_id)
+
+    def create_in_transaction(self, db: sqlite3.Connection, request: InvestigationRequest) -> str:
+        case_id, timestamp = uuid4().hex, now()
+        db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
+        origins = evidence_store.ingest(db, case_id, request, timestamp)
+        result = analyze(request)
+        result.evidence = evidence_store.record_transformations(
+            db, case_id, request, timestamp, result.evidence, origins
+        )
+        report = InvestigationReport(id=case_id, created_at=timestamp, **dict(result))
+        db.execute(
+            "UPDATE investigations SET report = ? WHERE id = ?",
+            (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
+        )
+        return case_id
 
     def verify_evidence(self, case_id: str) -> EvidenceIntegrity:
         with self.connect() as db:
