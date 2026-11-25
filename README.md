@@ -114,3 +114,5 @@ See [historical investigation memory](docs/detection/historical-memory.md) for s
 See [brand and planned domain architecture](docs/architecture/brand-and-domains.md).
 
 See [platform architecture and product boundaries](docs/architecture/platform-boundaries.md).
+
+See [centralized authentication](docs/architecture/authentication.md) for OIDC configuration, identity endpoints, and the workstation boundary.

@@ -1,5 +1,6 @@
 """Trusted context provider for the explicitly configured workstation runtime."""
 
+import os
 from uuid import UUID, uuid4
 
 from riswan_platform.core.context import ActorType, PlatformContext
@@ -11,6 +12,12 @@ LOCAL_TENANT = UUID("046096a9-dbf1-4dc2-a1ef-d776a6477b28")
 def local_context(
     mode: str | None, product_id: str, *, actor_type: ActorType = "human"
 ) -> PlatformContext:
+    environment = os.getenv("RISWAN_IR_ENV", os.getenv("SENTINELFORGE_ENV", "development"))
+    oidc_config = os.getenv("RISWAN_IR_OIDC_CONFIG", os.getenv("SENTINELFORGE_OIDC_CONFIG"))
+    if environment != "development" or oidc_config:
+        raise ContextRequiredError(
+            "Workstation authentication is restricted to development without OIDC."
+        )
     if mode != "local":
         raise ContextRequiredError("Set RISWAN_IR_MODE=local to run the workstation application.")
     request_id = uuid4().hex

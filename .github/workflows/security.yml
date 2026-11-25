@@ -41,7 +41,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           python -m venv "$RUNNER_TEMP/runtime-env"
-          "$RUNNER_TEMP/runtime-env/bin/python" -m pip install .
+          "$RUNNER_TEMP/runtime-env/bin/python" -m pip install ".[identity]"
           "$RUNNER_TEMP/runtime-env/bin/python" -m pip list --format=freeze \
             --exclude riswan-ir --exclude pip --exclude setuptools \
             > "$RUNNER_TEMP/runtime-manifest/requirements.txt"

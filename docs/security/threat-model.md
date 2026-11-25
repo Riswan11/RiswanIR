@@ -113,3 +113,14 @@ closed for case operations. Event delivery checks tenant, product and correlatio
 notifications carry references, while integrity and custody records remain in SQLite transactions.
 The fixed development tenant covers one mounted database and does not authenticate local users.
 Production identity, authorization, and tenant-aware persistence are planned.
+
+## Centralized authentication
+
+| STRIDE | Threat | Existing control | Residual risk |
+| --- | --- | --- | --- |
+| Spoofing | Forged, substituted, or expired JWT, stolen code, forged browser state or nonce | Exact issuer and client or audience binding, signed claims, explicit algorithm and key selection, PKCE, one-use state, and nonce | An entrusted provider or its signing keys can be compromised. |
+| Tampering | Untrusted token points to attacker-controlled JWKS | Configured HTTPS endpoints, no redirects, limited refresh and bounded key sets | A compromised operator configuration or provider domain can change trust. |
+| Repudiation | Actor denies login, revocation or suspension | Structured event rows with server-generated request IDs, actor and outcome | Local SQLite custody depends on workstation access controls. |
+| Disclosure | Tokens leak through logs, SQLite or browser-accessible state | Opaque session digest, secure cookies, query-free WSGI logging, generic errors, no stored refresh tokens | Configure equivalent behavior at the HTTPS edge. |
+| Denial of service | Credential stuffing, callback floods or unknown key floods | Provider-hosted credentials, bounded local request rate and attempts, and JWKS refresh limits | Provider and edge rate limits must be configured in deployment. |
+| Elevation of privilege | Actor accesses investigations without tenant authorization, or enables development in production | Separate modes, status checks, isolated identity database, and deny-by-default product routes | Tasks 4.4 and 4.5 will add authorization and membership. |
