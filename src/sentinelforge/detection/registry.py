@@ -22,7 +22,7 @@ class RuleLoader(yaml.SafeLoader):
         return cast(dict[str, object], super().construct_mapping(node, deep))
 
 
-def load_rules(data: bytes) -> list[DetectionRule]:
+def load_rule_rows(data: bytes) -> list[object]:
     if len(data) > MAX_BYTES:
         raise ValueError("Rule file is too large.")
     try:
@@ -35,7 +35,11 @@ def load_rules(data: bytes) -> list[DetectionRule]:
         raise ValueError("Invalid detection rule YAML.") from None
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_RULES:
         raise ValueError("Rule YAML must contain a bounded nonempty list.")
-    return [DetectionRule.model_validate(row) for row in rows]
+    return cast(list[object], rows)
+
+
+def load_rules(data: bytes) -> list[DetectionRule]:
+    return [DetectionRule.model_validate(row) for row in load_rule_rows(data)]
 
 
 def version_key(version: str) -> tuple[int, ...]:

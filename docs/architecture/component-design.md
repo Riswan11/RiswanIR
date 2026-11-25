@@ -36,3 +36,7 @@ See [detection architecture](../detection/overview.md).
 ## Security knowledge graph
 
 The case store builds an ontology-validated snapshot from canonical events, correlation, findings, evidence and advisory actions. The repository manages case-scoped persistence and the graph service exposes bounded queries. See [security knowledge graph](security-knowledge-graph.md).
+
+## Temporal correlation
+
+The temporal module matches configured event-time sequences against canonical events, detection findings, and case-local graph proofs. The case transaction archives the rules, policy, incidents, and partial matches. See [temporal threat correlation](../detection/temporal-correlation.md).
