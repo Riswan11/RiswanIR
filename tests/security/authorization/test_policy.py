@@ -1,5 +1,7 @@
 """Exercise authorization against trusted policy and untrusted request attributes."""
 
+import io
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -8,6 +10,7 @@ from wsgiref.util import setup_testing_defaults
 import pytest
 
 from riswan_app.authorization_repository import AuthorizationRepository
+from riswan_app.authorized_jobs import CaseJobs
 from riswan_ir.api.http import Application
 from riswan_ir.product import IRProduct
 from riswan_platform.authorization import (
@@ -215,7 +218,7 @@ def test_scoped_api_and_revocation(policy_setup, store, investigation_request):
             (replace(grant, scope=resources[0].scope),),
         ),
     )
-    guard = Enforcement(Evaluator(repository, repository), Directory())
+    guard = Enforcement(Evaluator(repository, repository), Directory(), repository.transaction)
     app = Application(
         store,
         context_provider=lambda: request.context,
@@ -224,10 +227,19 @@ def test_scoped_api_and_revocation(policy_setup, store, investigation_request):
         enforcement=guard,
     )
 
-    def get(path):
+    def get(path, method="GET", payload=None):
         env = {}
         setup_testing_defaults(env)
-        env.update(PATH_INFO=path, HTTP_HOST="localhost", HTTP_X_ROLE="ir.administrator")
+        data = json.dumps(payload).encode() if payload is not None else b""
+        env.update(
+            PATH_INFO=path,
+            HTTP_HOST="localhost",
+            HTTP_X_ROLE="ir.administrator",
+            REQUEST_METHOD=method,
+            CONTENT_TYPE="application/json",
+            CONTENT_LENGTH=str(len(data)),
+        )
+        env["wsgi.input"] = io.BytesIO(data)
         result = []
         body = b"".join(app(env, lambda status, headers: result.append(status)))
         return result[0], body
@@ -241,7 +253,136 @@ def test_scoped_api_and_revocation(policy_setup, store, investigation_request):
         assert get(f"{base}/{allowed.id}")[0].startswith("200")
         assert get(f"{base}/{hidden.id}") == get(f"{base}/{'0' * 32}")
         assert get(f"{base}/{allowed.id}/evidence")[0].startswith("404")
+        evidence = tuple(
+            replace(
+                resources[0],
+                scope=Scope(ScopeType.EVIDENCE, f"{allowed.id}/{event_id}"),
+                parents=(resources[0].scope, *resources[0].parents),
+            )
+            for event_id in set(
+                tuple(f"normalized/{item}" for item in store.evidence_ids(allowed.id))
+                + store.evidence_ids(allowed.id, raw=True)
+            )
+        )
+        resources += evidence
+        product = Resource(tenant, "ir", Scope(ScopeType.PRODUCT, "ir"))
+        resources += (product,)
+        grants = (
+            replace(grant, scope=resources[0].scope),
+            *(Grant(Permission.EVIDENCE, item.scope) for item in (resources[0], *evidence)),
+            *(
+                Grant(action, resources[0].scope)
+                for action in (
+                    Permission.GRAPH,
+                    Permission.FEEDBACK,
+                    Permission.DETECTION_READ,
+                    Permission.CORRELATE,
+                    Permission.MEMORY,
+                    Permission.RISK,
+                )
+            ),
+        )
+        repository.replace_snapshot(actor, tenant, SubjectPolicy((assignment,), grants))
+        status, body = get(f"{base}/{allowed.id}")
+        assert status.startswith("200") and "evidence" in json.loads(body)
+        assert get(f"{base}/{allowed.id}/evidence/{allowed.evidence[0].id}")[0].startswith("200")
+        assert get(f"{base}/{allowed.id}/knowledge-graph")[0].startswith("200")
+        risk_status, risk_body = get(f"{base}/{allowed.id}/risk")
+        assert risk_status.startswith("200")
+        for entry in json.loads(risk_body)["assessments"]:
+            assert get(f"{base}/{allowed.id}/risk/{entry['id']}")[0].startswith("200")
+        assert get(f"{base}/{allowed.id}/events")[0].startswith("404")
+        assert get(f"{base}/{allowed.id}/actions/test/approve", "POST", {})[0].startswith("404")
+        assert get(
+            f"{base}/{allowed.id}/feedback",
+            "POST",
+            {
+                "reviewer": "spoofed",
+                "disposition": "benign",
+                "notes": "Test review",
+            },
+        )[0].startswith("201")
+        assert store.get(allowed.id).reviews[-1].reviewer == str(actor)
+        with bind_context(request.context):
+            jobs = CaseJobs(store, guard)
+            assert jobs.verify_evidence(allowed.id).valid
+            jobs.replay_detection(allowed.id)
+            with pytest.raises(AccessDenied):
+                jobs.verify_evidence(hidden.id)
+        assert allowed.action is not None
+        proposal = Resource(
+            tenant,
+            "ir",
+            Scope(ScopeType.RESPONSE, f"{allowed.id}/{allowed.action.id}"),
+            (resources[0].scope, *resources[0].parents),
+            proposer_id=actor,
+        )
+        resources += (proposal,)
+        approver = replace(assignment, role=Role.APPROVER)
+        response_grant = Grant(Permission.APPROVE, proposal.scope)
+        repository.replace_snapshot(
+            actor, tenant, SubjectPolicy((approver,), (*grants, response_grant))
+        )
+        approval_url = f"{base}/{allowed.id}/actions/{allowed.action.id}/approve"
+        assert get(approval_url, "POST", {})[0].startswith("404")
+        assert store.get(allowed.id).decision is None
+        resources = (*resources[:-1], replace(proposal, proposer_id=uuid4()))
+        assert get(approval_url, "POST", {"reviewer": "spoofed"})[0].startswith("201")
+        assert store.get(allowed.id).decision.reviewer == str(actor)
         repository.replace_snapshot(actor, tenant, None)
         assert get(base)[1] == b"[]"
         with bind_context(request.context), pytest.raises(AccessDenied):
             guard.require(Permission.READ, ScopeType.INVESTIGATION, allowed.id)
+
+
+def test_delegation_is_bounded_and_revocable(policy_setup):
+    repository, request, assignment, grant = policy_setup
+    actor, tenant, target = (
+        request.principal.identity.identity_id,
+        request.context.tenant_id,
+        uuid4(),
+    )
+    organization = Scope(ScopeType.ORGANIZATION, str(tenant))
+    authorization = replace(
+        request,
+        action=Permission.ROLES_ASSIGN,
+        context=replace(request.context, product_id="platform"),
+        resource=Resource(tenant, "platform", organization),
+    )
+    admin = replace(assignment, role=Role.ADMIN, scope=organization)
+    repository.replace_snapshot(actor, tenant, SubjectPolicy((admin, assignment), (grant,)))
+    repository.replace_snapshot(target, tenant, SubjectPolicy((), (grant,)))
+    viewer = replace(assignment, role=Role.VIEWER)
+    with pytest.raises(AccessDenied):
+        repository.change_assignment(authorization, target, replace(viewer, role=Role.COMMANDER))
+    with pytest.raises(AccessDenied):
+        repository.change_assignment(authorization, actor, viewer)
+    repository.change_assignment(authorization, target, viewer)
+    delegated = repository.policy_for(target, tenant).assignments[0]
+    assert delegated.grantor_id == actor
+    repository.change_assignment(authorization, target, delegated, revoke=True)
+    assert repository.policy_for(target, tenant).assignments[0].revoked
+
+
+def test_revocation_waits_for_authorized_operation(policy_setup):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    repository, request, _, _ = policy_setup
+    actor, tenant = request.principal.identity.identity_id, request.context.tenant_id
+    evaluator = Evaluator(repository, repository)
+    started = Event()
+
+    def revoke():
+        started.set()
+        repository.replace_snapshot(actor, tenant, None)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with repository.transaction():
+            assert evaluator.evaluate(request).allowed
+            pending = executor.submit(revoke)
+            assert started.wait(2)
+            assert not pending.done()
+            assert evaluator.evaluate(request).allowed
+        pending.result(timeout=4)
+    assert evaluator.evaluate(request).reason_code == "NO_MEMBERSHIP"

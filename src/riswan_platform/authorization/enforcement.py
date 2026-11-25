@@ -1,6 +1,7 @@
 """Enforcement shared by HTTP handlers and trusted execution adapters."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager, nullcontext
 from typing import Protocol
 
 from riswan_platform.core.context import require_context
@@ -19,21 +20,37 @@ class ResourceDirectory(Protocol):
 
 
 class Enforcement:
-    def __init__(self, engine: AuthorizationEngine, resources: ResourceDirectory):
+    def __init__(
+        self,
+        engine: AuthorizationEngine,
+        resources: ResourceDirectory,
+        transaction: Callable[[], AbstractContextManager[None]] | None = None,
+    ):
         self.engine = engine
         self.resources = resources
+        self._transaction = transaction
+
+    def operation(self, *, mutation: bool = False) -> AbstractContextManager[None]:
+        if self._transaction is not None:
+            return self._transaction()
+        if mutation:
+            raise AccessDenied
+        return nullcontext()
 
     def _allowed(self, action: Permission, resource: Resource) -> bool:
         return self.engine.evaluate(
             AuthorizationRequest(require_principal(), require_context(), action, resource)
         ).allowed
 
-    def require(self, action: Permission, kind: ScopeType, key: str) -> None:
+    def require(
+        self, action: Permission, kind: ScopeType, key: str, *, parent: Scope | None = None
+    ) -> None:
         try:
             resource = self.resources.resolve(kind, key)
             if (
                 resource is not None
                 and resource.scope == Scope(kind, key)
+                and (parent is None or parent in resource.parents)
                 and self._allowed(action, resource)
             ):
                 return
@@ -41,7 +58,7 @@ class Enforcement:
             raise AccessDenied from exc
         raise AccessDenied
 
-    def investigation_ids(self) -> tuple[str, ...]:
+    def investigation_ids(self, action: Permission = Permission.READ) -> tuple[str, ...]:
         try:
             require_principal()
             require_context()
@@ -49,7 +66,7 @@ class Enforcement:
                 resource.scope.id
                 for resource in self.resources.investigations()
                 if resource.scope.kind == ScopeType.INVESTIGATION
-                and self._allowed(Permission.READ, resource)
+                and self._allowed(action, resource)
             )
         except Exception as exc:
             raise AccessDenied from exc

@@ -292,18 +292,21 @@ def candidates(
     accounts: set[str],
     as_of: str,
     after: str,
+    case_ids: tuple[str, ...] | None = None,
 ) -> list[str]:
     if not accounts:
         return []
     keys = json.dumps(sorted(accounts))
+    authorized = json.dumps(case_ids) if case_ids is not None else None
     rows = db.execute(
         """SELECT c.case_id FROM memory_cases c
         WHERE c.indexed_at BETWEEN ? AND ?
+        AND (? IS NULL OR c.case_id IN (SELECT value FROM json_each(?)))
         AND EXISTS (SELECT 1 FROM memory_accounts a WHERE a.case_id = c.case_id AND a.account IN (SELECT value FROM json_each(?)))
         AND NOT EXISTS (SELECT 1 FROM memory_accounts a WHERE a.case_id = c.case_id AND a.account NOT IN (SELECT value FROM json_each(?)))
         AND NOT EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.case_id = c.case_id)
         ORDER BY c.indexed_at DESC, c.case_id LIMIT 101""",
-        (time_key(after), time_key(as_of), keys, keys),
+        (time_key(after), time_key(as_of), authorized, authorized, keys, keys),
     )
     return [row[0] for row in rows]
 

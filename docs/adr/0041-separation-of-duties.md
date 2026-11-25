@@ -10,7 +10,7 @@ Delegation and self-approval can bypass oversight.
 
 ## Decision
 
-Require verified MFA and trusted independent proposer metadata. Disable delegation until bounded grants can be written transactionally.
+Require verified MFA and trusted independent proposer metadata. Use locked delegation within the grantor's scope and permission set.
 
 ## Alternatives considered
 
@@ -22,4 +22,4 @@ Sensitive changes require independently verifiable authority.
 
 ## Trade-offs and consequences
 
-Authenticated approval writes and delegated administration remain closed.
+Live membership provisioning and administration UI remain separate integration work.

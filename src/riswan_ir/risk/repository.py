@@ -33,6 +33,58 @@ def append(db: sqlite3.Connection, archive: RiskArchive) -> None:
     )
 
 
+# Scoped readers cannot replay or expose scores derived from another case's archive
+# or from historical aggregates whose input case IDs were not persisted.
+def scoped_page(
+    db: sqlite3.Connection,
+    case_id: str,
+    limit: int,
+    offset: int,
+    subject: tuple[str, str] | None,
+    *,
+    assessment_id: str | None = None,
+) -> list[RiskArchive]:
+    kind, subject_id = subject or (None, None)
+    rows = db.execute(
+        """
+        WITH eligible AS (
+            SELECT assessment.* FROM risk_assessments assessment
+            JOIN risk_assessments original
+              ON original.id = json_extract(assessment.archive, '$.assessment.original_assessment_id')
+             AND original.investigation_id = assessment.investigation_id
+            LEFT JOIN risk_assessments previous
+              ON previous.id = json_extract(assessment.archive, '$.assessment.previous_assessment_id')
+            WHERE assessment.investigation_id = :case_id
+              AND (json_extract(assessment.archive, '$.assessment.previous_assessment_id') IS NULL
+                   OR previous.investigation_id = :case_id)
+              AND json_extract(assessment.archive, '$.inputs.recurrence_policy_digest') IS NULL
+              AND json_extract(original.archive, '$.inputs.recurrence_policy_digest') IS NULL
+        )
+        SELECT archive FROM eligible WHERE (
+          (:id IS NOT NULL AND id = :id)
+          OR (:id IS NULL AND :kind IS NOT NULL AND kind = :kind AND subject_id = :subject_id)
+          OR (:id IS NULL AND :kind IS NULL AND ordinal IN (
+              SELECT MAX(ordinal) FROM eligible GROUP BY kind, subject_id
+          ))
+        ) ORDER BY ordinal DESC LIMIT :limit OFFSET :offset
+        """,
+        {
+            "case_id": case_id,
+            "kind": kind,
+            "subject_id": subject_id,
+            "limit": limit,
+            "offset": offset,
+            "id": assessment_id,
+        },
+    )
+    return [RiskArchive.model_validate_json(row[0]) for row in rows]
+
+
+def scoped_get(db: sqlite3.Connection, case_id: str, assessment_id: str) -> RiskArchive | None:
+    rows = scoped_page(db, case_id, 1, 0, None, assessment_id=assessment_id)
+    return rows[0] if rows else None
+
+
 def get(db: sqlite3.Connection, case_id: str, assessment_id: str) -> RiskArchive | None:
     row = db.execute(
         "SELECT archive FROM risk_assessments WHERE investigation_id = ? AND id = ?",

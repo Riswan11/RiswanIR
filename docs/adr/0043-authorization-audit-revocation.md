@@ -10,7 +10,7 @@ Privileged decisions need records and stale policy can prolong access.
 
 ## Decision
 
-Persist denials and privileged decisions. Read policy on each evaluation.
+Persist denials and privileged decisions. Read policy on each evaluation and serialize scoped operations with policy writes.
 
 ## Alternatives considered
 
@@ -22,4 +22,4 @@ Fresh policy reads and mandatory audit writes reduce stale and unaudited access.
 
 ## Trade-offs and consequences
 
-In-flight decisions may complete and audit storage failure denies privileged access.
+An operation that acquires the policy lock first may complete before revocation.

@@ -22,4 +22,4 @@ Queries need an authorized scope before accessing payloads.
 
 ## Trade-offs and consequences
 
-Production resource metadata and aggregate projections still need integration.
+Scoped aggregate queries filter before pagination. Production resource metadata must be supplied by a trusted directory.

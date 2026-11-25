@@ -28,6 +28,7 @@ class Permission(StrEnum):
     GRAPH = "ir.graph.query"
     RISK = "ir.risk.assess"
     MEMORY = "ir.memory.read"
+    MEMORY_MANAGE = "ir.memory.manage"
     FEEDBACK = "ir.memory.feedback"
     PROPOSE = "ir.response.propose"
     APPROVE = "ir.response.approve"
@@ -60,7 +61,8 @@ ROLE_PERMISSIONS = {
     Role.INTEGRATION: frozenset({P.INTEGRATIONS_MANAGE}),
     Role.AUDITOR: frozenset({P.AUDIT_READ}),
     Role.IR_ADMIN: ANALYZE | {P.DETECTION_MANAGE, P.SETTINGS},
-    Role.COMMANDER: ANALYZE | {P.CREATE, P.UPDATE, P.CLOSE, P.EXPORT, P.RISK, P.PROPOSE},
+    Role.COMMANDER: ANALYZE
+    | {P.CREATE, P.UPDATE, P.CLOSE, P.EXPORT, P.RISK, P.PROPOSE, P.MEMORY_MANAGE},
     Role.ANALYST: ANALYZE | {P.CREATE, P.UPDATE, P.CORRELATE, P.RISK, P.FEEDBACK, P.PROPOSE},
     Role.HUNTER: ANALYZE | {P.CORRELATE},
     Role.APPROVER: VIEW | {P.APPROVE},
@@ -74,6 +76,7 @@ PRIVILEGED = frozenset(
         P.INTEGRATIONS_MANAGE,
         P.AUDIT_READ,
         P.EXPORT,
+        P.MEMORY_MANAGE,
         P.APPROVE,
         P.DETECTION_MANAGE,
         P.SETTINGS,
@@ -265,7 +268,7 @@ class Evaluator:
         )
         if any(g.deny for g in grants):
             return "EXPLICIT_DENY"
-        if action in {P.EXECUTE, P.ROLES_ASSIGN}:
+        if action == P.EXECUTE:
             return "OPERATION_DISABLED"
         if identity.identity_type != IdentityType.HUMAN and (
             action in PRIVILEGED

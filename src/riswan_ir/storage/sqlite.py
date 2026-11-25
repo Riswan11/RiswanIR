@@ -253,7 +253,9 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             return self._index_memory_case(db, case_id, memory_policy(), now())
 
-    def memory_intelligence(self, case_id: str, as_of: str | None = None) -> Intelligence:
+    def memory_intelligence(
+        self, case_id: str, as_of: str | None = None, *, case_ids: tuple[str, ...] | None = None
+    ) -> Intelligence:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self._stored_case(db, case_id)
@@ -270,6 +272,7 @@ class Store:
                 as_of or timestamp,
                 timestamp,
                 authorization=live,
+                case_ids=case_ids,
             )
 
     def memory_feedback(self, case_id: str, feedback: MemoryFeedback) -> None:
@@ -344,21 +347,22 @@ class Store:
         limit: int,
         offset: int,
         subject: tuple[str, str] | None,
+        *,
+        scoped: bool = False,
     ) -> list[Assessment]:
         with self.connect() as db:
             case = db.execute("SELECT 1 FROM investigations WHERE id = ?", (case_id,)).fetchone()
             if case is None:
                 raise NotFoundError("Investigation not found.")
-            return [
-                entry.assessment
-                for entry in risk_repository.page(db, case_id, limit, offset, subject)
-            ]
+            page = risk_repository.scoped_page if scoped else risk_repository.page
+            return [entry.assessment for entry in page(db, case_id, limit, offset, subject)]
 
     def risk_assessment(
-        self, case_id: str, assessment_id: str, *, replay: bool = False
+        self, case_id: str, assessment_id: str, *, replay: bool = False, scoped: bool = False
     ) -> Assessment:
         with self.connect() as db:
-            archive = risk_repository.get(db, case_id, assessment_id)
+            get = risk_repository.scoped_get if scoped else risk_repository.get
+            archive = get(db, case_id, assessment_id)
             if archive is None:
                 raise NotFoundError("Risk assessment not found.")
             item = archive.assessment
@@ -584,7 +588,9 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             return evidence_store.expire(db, policy, timestamp or utc_timestamp(now()))
 
-    def get(self, investigation_id: str) -> InvestigationReport:
+    def get(
+        self, investigation_id: str, *, related_ids: tuple[str, ...] | None = None
+    ) -> InvestigationReport:
         with self.connect() as db:
             row = db.execute(
                 "SELECT report FROM investigations WHERE id = ?", (investigation_id,)
@@ -605,11 +611,13 @@ class Store:
             ).fetchone()
             report.decision = ActionDecision.model_validate(dict(decision)) if decision else None
             moment = memory_repository.time_key(now())
+            authorized = json.dumps(related_ids) if related_ids is not None else None
             history = db.execute(
                 """
                 SELECT i.report, r.disposition FROM investigations i JOIN reviews r
                     ON r.id = (SELECT max(id) FROM reviews WHERE investigation_id = i.id)
                 WHERE i.id <> ?
+                AND (? IS NULL OR i.id IN (SELECT value FROM json_each(?)))
                 AND NOT EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.case_id = i.id)
                 AND NOT EXISTS (
                     SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
@@ -626,7 +634,7 @@ class Store:
                 )
                 ORDER BY r.id DESC LIMIT 100
             """,
-                (investigation_id, moment, moment),
+                (investigation_id, authorized, authorized, moment, moment),
             )
             config = memory_policy()
             current_scope = self._legacy_memory_scope(report)
@@ -683,6 +691,14 @@ class Store:
                     "SELECT report FROM investigations ORDER BY created_at DESC LIMIT 50"
                 )
             ]
+
+    def evidence_ids(self, case_id: str, *, raw: bool = False) -> tuple[str, ...]:
+        with self.connect() as db:
+            if raw:
+                return tuple(
+                    f"raw/{row.evidence_id}" for row in evidence_store.receipts(db, case_id)
+                )
+            return tuple(item.id for item in self._stored_case(db, case_id).evidence)
 
     def get_summary(self, investigation_id: str) -> InvestigationSummary:
         with self.connect() as db:
