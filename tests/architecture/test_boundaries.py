@@ -151,7 +151,20 @@ def test_collection_and_pure_domain_do_not_access_owned_tables_directly():
 
 def test_table_writes_stay_with_the_owners():
     statements = {}
-    owners = {}
+    owners = {
+        "riswan_data.protected_objects": "riswan_app.postgres_objects",
+        "riswan_data.investigation_ownership": "riswan_app.postgres_case_ownership",
+    }
+    identifier = r"((?:\w+\.)?\w+)"
+    migrations = (SRC / "riswan_app" / "migrations").glob("*.sql")
+    migrated_tables = {
+        table
+        for path in migrations
+        for table in re.findall(
+            r"CREATE TABLE(?: IF NOT EXISTS)? " + identifier, path.read_text(encoding="utf-8"), re.I
+        )
+    }
+    assert migrated_tables == owners.keys()
     for module, path in sources().items():
         # Values are assembled from source literals. This intentionally checks static SQL.
         values = [
@@ -161,7 +174,7 @@ def test_table_writes_stay_with_the_owners():
         ]
         statements[module] = values
         for value in values:
-            for table in re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", value, re.I):
+            for table in re.findall(r"CREATE TABLE IF NOT EXISTS " + identifier, value, re.I):
                 assert table not in owners
                 owners[table] = module
     assert {"investigations", "raw_evidence", "risk_assessments", "memory_records"} <= owners.keys()
