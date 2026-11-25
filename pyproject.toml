@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Local CloudTrail investigation workspace"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.11,<3", "boto3>=1.40,<2", "PyYAML>=6.0.2,<7"]
+dependencies = ["pydantic>=2.14.4,<3", "boto3>=1.40,<2", "PyYAML>=6.0.2,<7"]
 
 [project.optional-dependencies]
 test = [
