@@ -32,6 +32,7 @@ where = ["src"]
 "sentinelforge.frontend" = ["index.html"]
 "sentinelforge.detection" = ["aws-rules.yml"]
 "sentinelforge.correlation.temporal" = ["aws-rules.yml"]
+"sentinelforge.risk" = ["default.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

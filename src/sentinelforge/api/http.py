@@ -18,6 +18,8 @@ from ..models import (
     EvidenceSubmission,
     InvestigationRequest,
 )
+from ..risk.models import Reassessment
+from ..risk.service import serve as serve_risk
 from ..schema.projection import export_events
 from ..security.host import is_local_host
 
@@ -96,6 +98,14 @@ class Application:
         match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
         if match:
             investigation_id, suffix = match.groups()
+            if method == "GET" and (suffix == "/risk" or suffix.startswith("/risk/")):
+                return 200, serve_risk(
+                    self.store, investigation_id, suffix, env.get("QUERY_STRING", "")
+                )
+            if method == "POST" and suffix == "/risk/reassess":
+                reassessment = Reassessment.model_validate(self.body(env))
+                return 200, self.store.reassess_risk(investigation_id, reassessment).payload()
+
             if method == "GET" and (
                 suffix in {"/temporal-correlation", "/temporal-correlation/replay", "/incidents"}
                 or suffix.startswith("/incidents/")

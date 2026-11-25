@@ -1,0 +1,18 @@
+- id: security-intelligence
+  version: "1.0.0"
+  risk:
+    threat_impact: 25
+    asset_criticality: 20
+    identity_privilege: 15
+    resource_exposure: 10
+    attack_progression: 15
+    business_impact: 10
+    historical_recurrence: 5
+  confidence:
+    evidence_integrity: 20
+    correlation_reliability: 25
+    rule_reliability: 20
+    independent_corroboration: 20
+    telemetry_completeness: 15
+  severity_thresholds: [20, 40, 70, 90]
+  confidence_review_below: 60

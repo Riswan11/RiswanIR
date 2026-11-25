@@ -40,6 +40,10 @@ from ..models.chain_of_custody import EvidenceIntegrity, EvidenceRetentionPolicy
 from ..models.detection import DetectionContext, DetectionReplayResult, DetectionRule
 from ..models.provenance import EvidenceProvenance
 from ..normalization.aws.ocsf_mapper import map_event
+from ..risk import repository as risk_repository
+from ..risk.engine import calculate as calculate_risk
+from ..risk.models import Assessment, Reassessment, Trigger
+from ..risk.reassessment import score_case
 from . import checkpoint_store, evidence_store
 
 SCHEMA = """
@@ -107,6 +111,7 @@ class Store:
                 + checkpoint_store.SCHEMA
                 + GRAPH_SCHEMA
                 + temporal_repository.SCHEMA
+                + risk_repository.SCHEMA
             )
 
     @contextmanager
@@ -184,7 +189,106 @@ class Store:
         temporal_repository.save(
             db, TemporalSnapshot(result=result_, rules=temporal_rules, policy=policy)
         )
+        score_case(
+            db,
+            report,
+            graph,
+            result_,
+            self.detection_context,
+            timestamp,
+            "revision" if previous else "initial",
+        )
         return case_id
+
+    def _score_existing_risk(
+        self,
+        db: sqlite3.Connection,
+        case_id: str,
+        timestamp: str,
+        trigger: Trigger,
+        request: Reassessment | None = None,
+    ) -> Assessment | None:
+        row = db.execute("SELECT report FROM investigations WHERE id = ?", (case_id,)).fetchone()
+        if row is None:
+            raise NotFoundError("Investigation not found.")
+        report = deserialize_report(row["report"])
+        latest = db.execute(
+            "SELECT disposition FROM reviews WHERE investigation_id = ? ORDER BY id DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+        snapshot = temporal_repository.load(db, case_id)
+        return score_case(
+            db,
+            report,
+            build_security_graph(report),
+            snapshot.result if snapshot else None,
+            self.detection_context,
+            timestamp,
+            trigger,
+            disposition=Disposition(latest["disposition"]) if latest else None,
+            request=request,
+        )
+
+    def reassess_risk(self, case_id: str, request: Reassessment) -> Assessment:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            result = self._score_existing_risk(db, case_id, now(), "reassessment", request)
+            if result is None:
+                raise NotFoundError("Risk subject not found.")
+            return result
+
+    def risk_page(
+        self,
+        case_id: str,
+        limit: int,
+        offset: int,
+        subject: tuple[str, str] | None,
+    ) -> list[Assessment]:
+        with self.connect() as db:
+            case = db.execute("SELECT 1 FROM investigations WHERE id = ?", (case_id,)).fetchone()
+            if case is None:
+                raise NotFoundError("Investigation not found.")
+            return [
+                entry.assessment
+                for entry in risk_repository.page(db, case_id, limit, offset, subject)
+            ]
+
+    def risk_assessment(
+        self, case_id: str, assessment_id: str, *, replay: bool = False
+    ) -> Assessment:
+        with self.connect() as db:
+            archive = risk_repository.get(db, case_id, assessment_id)
+            if archive is None:
+                raise NotFoundError("Risk assessment not found.")
+            item = archive.assessment
+            if not replay:
+                return item
+            original = None
+            if item.original_assessment_id != item.id:
+                row = db.execute(
+                    "SELECT investigation_id FROM risk_assessments WHERE id = ? AND kind = ? AND subject_id = ?",
+                    (item.original_assessment_id, item.subject_kind, item.subject_id),
+                ).fetchone()
+                origin = (
+                    risk_repository.get(db, row["investigation_id"], item.original_assessment_id)
+                    if row
+                    else None
+                )
+                if origin is None:
+                    raise ValueError("Original assessment is unavailable.")
+                original = origin.assessment
+        reproduced = calculate_risk(
+            case_id,
+            archive.inputs,
+            archive.policy,
+            item.created_at,
+            item.trigger,
+            original=original,
+            predecessor_id=item.previous_assessment_id,
+        ).assessment
+        if reproduced != item:
+            raise ValueError("Archived assessment could not be reproduced.")
+        return reproduced
 
     @staticmethod
     def _received_times(db: sqlite3.Connection, case_id: str) -> dict[str, str]:
@@ -439,6 +543,7 @@ class Store:
                     review.created_at,
                 ),
             )
+            self._score_existing_risk(db, investigation_id, review.created_at, "analyst_review")
         return self.get(investigation_id)
 
     def decide(

@@ -40,3 +40,7 @@ The case store builds an ontology-validated snapshot from canonical events, corr
 ## Temporal correlation
 
 The temporal module matches configured event-time sequences against canonical events, detection findings, and case-local graph proofs. The case transaction archives the rules, policy, incidents, and partial matches. See [temporal threat correlation](../detection/temporal-correlation.md).
+
+## Risk and confidence
+
+The scoring adapter projects case-local evidence and inventory into provider-neutral weighted inputs. The case store archives risk, confidence, priorities and policy versions separately from triage fields. See [risk scoring](../detection/risk-scoring.md).

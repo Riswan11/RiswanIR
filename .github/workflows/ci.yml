@@ -28,7 +28,7 @@ jobs:
           python -m pytest tests/ -v --junitxml=reports/pytest.xml -o junit_family=xunit1 --cov=sentinelforge \
             --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-fail-under=90
       - name: Verify installed browser asset
-        run: python -c "from importlib.resources import files; from sentinelforge import frontend; from sentinelforge.correlation.temporal.registry import default_rules; from sentinelforge.detection.registry import default_registry; assert files(frontend).joinpath('index.html').is_file(); assert len(default_registry().select()) >= 20; assert len(default_rules()) >= 10"
+        run: python -c "from importlib.resources import files; from sentinelforge import frontend; from sentinelforge.correlation.temporal.registry import default_rules; from sentinelforge.detection.registry import default_registry; from sentinelforge.risk.registry import default_policy; assert files(frontend).joinpath('index.html').is_file(); assert len(default_registry().select()) >= 20; assert len(default_rules()) >= 10; assert default_policy().id == 'security-intelligence'"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
