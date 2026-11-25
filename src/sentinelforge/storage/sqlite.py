@@ -1,13 +1,15 @@
 """Persist investigations, analyst feedback, and action decisions in SQLite."""
 
+import os
 import sqlite3
 from contextlib import closing, contextmanager
+from datetime import datetime
 from uuid import uuid4
 
 from pydantic import ValidationError
 
 from ..core.errors import NotFoundError
-from ..core.fields import now
+from ..core.fields import now, utc_timestamp
 from ..investigation.analysis import analyze
 from ..memory.similarity import similar_investigations
 from ..models import (
@@ -19,6 +21,8 @@ from ..models import (
     InvestigationRequest,
     InvestigationSummary,
 )
+from ..models.chain_of_custody import EvidenceIntegrity, EvidenceRetentionPolicy
+from . import evidence_store
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS investigations (
@@ -46,8 +50,14 @@ def deserialize_report(payload: str) -> InvestigationReport:
 class Store:
     def __init__(self, path):
         self.path = path
+        # Existing databases keep their operating-system permissions.
+        if os.name == "posix":
+            try:
+                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                pass
         with self.connect() as db:
-            db.executescript(SCHEMA)
+            db.executescript(SCHEMA + evidence_store.EVIDENCE_SCHEMA)
 
     @contextmanager
     def connect(self):
@@ -57,18 +67,80 @@ class Store:
             yield db
 
     def create(self, request: InvestigationRequest) -> InvestigationReport:
-        result = analyze(request)
-        report = InvestigationReport(id=uuid4().hex, created_at=now(), **dict(result))
+        case_id, timestamp = uuid4().hex, now()
         with self.connect() as db:
-            db.execute(
-                "INSERT INTO investigations VALUES (?, ?, ?)",
-                (
-                    report.id,
-                    report.created_at,
-                    report.model_dump_json(by_alias=True, exclude_unset=True),
-                ),
+            db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
+            origins = evidence_store.ingest(db, case_id, request, timestamp)
+            result = analyze(request)
+            result.evidence = evidence_store.record_transformations(
+                db, case_id, request, timestamp, result.evidence, origins
             )
-        return self.get(report.id)
+            report = InvestigationReport(id=case_id, created_at=timestamp, **dict(result))
+            db.execute(
+                "UPDATE investigations SET report = ? WHERE id = ?",
+                (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
+            )
+        return self.get(case_id)
+
+    def verify_evidence(self, case_id: str) -> EvidenceIntegrity:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return self._verify_evidence(db, case_id)
+
+    def _verify_evidence(self, db: sqlite3.Connection, case_id: str) -> EvidenceIntegrity:
+        row = db.execute("SELECT report FROM investigations WHERE id = ?", (case_id,)).fetchone()
+        if row is None:
+            raise NotFoundError("Investigation not found.")
+        try:
+            report = InvestigationReport.model_validate_json(row["report"])
+            result = evidence_store.verify(db, case_id, report.evidence)
+        except (ValueError, TypeError):
+            return EvidenceIntegrity(
+                raw_checked=0,
+                normalized_checked=0,
+                expired_raw=0,
+                custody_checked=0,
+                problems=["Stored evidence or custody metadata is invalid."],
+            )
+        if result.custody_checked:
+            evidence_store.append_custody(db, case_id, "verified", now(), {"valid": result.valid})
+        return result
+
+    def export_evidence(self, case_id: str) -> dict[str, object]:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            verification = self._verify_evidence(db, case_id)
+            if verification.valid:
+                evidence_store.append_custody(
+                    db, case_id, "export_prepared", now(), {"format": "json-v1"}
+                )
+                report = db.execute(
+                    "SELECT report FROM investigations WHERE id = ?", (case_id,)
+                ).fetchone()
+                return {
+                    "format": "sentinelforge-evidence-v1",
+                    "report": deserialize_report(report["report"]).payload(),
+                    "raw_evidence": [
+                        item.payload() for item in evidence_store.raw_records(db, case_id)
+                    ],
+                    "provenance": [
+                        item.model_dump(mode="json")
+                        for item in evidence_store.receipts(db, case_id)
+                    ],
+                    "transformations": [
+                        item.payload() for item in evidence_store.transformations(db, case_id)
+                    ],
+                    "custody": [item.payload() for item in evidence_store.custody(db, case_id)],
+                    "verification": verification.payload(),
+                }
+        raise ValueError("Export requires valid evidence custody and integrity.")
+
+    def expire_evidence(
+        self, policy: EvidenceRetentionPolicy, timestamp: datetime | None = None
+    ) -> int:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return evidence_store.expire(db, policy, timestamp or utc_timestamp(now()))
 
     def get(self, investigation_id: str) -> InvestigationReport:
         with self.connect() as db:

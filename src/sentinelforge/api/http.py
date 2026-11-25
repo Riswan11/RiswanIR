@@ -40,8 +40,8 @@ class Application:
             status, body = 409, json.dumps({"error": str(exc)}).encode()
         except NotFoundError as exc:
             status, body = 404, json.dumps({"error": str(exc)}).encode()
-        except Exception:
-            LOGGER.exception("Unexpected error handling local request")
+        except Exception as exc:
+            LOGGER.error("Unexpected error handling local request (%s)", type(exc).__name__)
             status, content_type, body = (
                 500,
                 "application/json",

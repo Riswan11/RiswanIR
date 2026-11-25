@@ -140,6 +140,7 @@ async function refresh() {
 intake.onsubmit = run(async () => {
   const body = Object.fromEntries(new FormData(intake));
   body.records = JSON.parse(body.records);
+  body.provenance = {collection_method: "manual_upload"};
   render(await api(base, body));
   await refresh();
 });

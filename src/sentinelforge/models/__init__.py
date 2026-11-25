@@ -14,6 +14,7 @@ from pydantic import (
 from ..ingestion.exports import export_records
 from .base import DomainModel, Text, Timestamp
 from .evidence import Evidence as Evidence
+from .provenance import CollectionContext
 from .security_event import NormalizedEvent as NormalizedEvent
 
 Reviewer = Annotated[str, StringConstraints(min_length=1, max_length=100, strip_whitespace=True)]
@@ -50,6 +51,7 @@ class InvestigationRequest(DomainModel):
     title: Text
     principal: Text
     records: Annotated[list[CloudTrailRecord], Field(max_length=2000)]
+    provenance: CollectionContext = Field(default_factory=CollectionContext)
 
     @field_validator("records", mode="before")
     @classmethod

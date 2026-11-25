@@ -7,6 +7,6 @@
 5. SQLite persists the report as JSON. Reads hydrate analyst reviews, the advisory decision and related reviewed cases. The API can return the full report, evidence, graph, or recent investigation summaries.
 6. Feedback appends a review row. A unique key permits one stored advisory decision per case. Approval records the analyst's input without calling AWS.
 
-The operator retains the source export. A hash supports comparison against a trusted prior digest. The application neither verifies export authenticity nor automatically rechecks stored digests on read.
+Before normalization, the application stages the original record values separately from the report, then commits raw records, receipts, normalized evidence and custody entries together. The operator still retains the source export if file-level fidelity is needed. Forensic verification explicitly checks the retained digests and custody links. It does not authenticate the source export. [Evidence custody](evidence-custody.md)
 
 [Data flow diagram](diagrams/data-flow.md) · [Data classification](../security/data-classification.md)

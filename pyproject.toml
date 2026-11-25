@@ -17,6 +17,7 @@ security = ["bandit>=1.8,<2", "pip-audit>=2.9,<3"]
 
 [project.scripts]
 sentinelforge = "sentinelforge.__main__:main"
+sentinelforge-evidence = "sentinelforge.evidence.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
