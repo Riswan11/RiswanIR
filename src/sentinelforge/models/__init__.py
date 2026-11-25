@@ -13,6 +13,7 @@ from pydantic import (
 
 from ..ingestion.exports import export_records
 from .base import DomainModel, Text, Timestamp
+from .correlation import CorrelationConfidence, CorrelationResult
 from .evidence import Evidence as Evidence
 from .provenance import CollectionContext
 from .security_event import NormalizedEvent as NormalizedEvent
@@ -40,6 +41,18 @@ class Relationship(StrEnum):
     CALLED = "CALLED"
     TARGETED = "TARGETED"
     ISSUED_CREDENTIAL_USED_IN = "ISSUED_CREDENTIAL_USED_IN"
+    ASSUMED_ROLE = "ASSUMED_ROLE"
+    ESTABLISHED_SESSION = "ESTABLISHED_SESSION"
+    ISSUED_CREDENTIAL = "ISSUED_CREDENTIAL"
+    AUTHENTICATED_AS = "AUTHENTICATED_AS"
+    PERFORMED_ACTION = "PERFORMED_ACTION"
+    ACCESSED_RESOURCE = "ACCESSED_RESOURCE"
+    MODIFIED_RESOURCE = "MODIFIED_RESOURCE"
+    BELONGS_TO_ACCOUNT = "BELONGS_TO_ACCOUNT"
+    CHAINED_TO = "CHAINED_TO"
+    SUPPORTED_BY = "SUPPORTED_BY"
+    SHARED_EVENT = "SHARED_EVENT"
+    RELATED_REQUEST = "RELATED_REQUEST"
 
 
 class ApprovalDecision(StrEnum):
@@ -47,9 +60,7 @@ class ApprovalDecision(StrEnum):
     REJECT = "reject"
 
 
-class InvestigationRequest(DomainModel):
-    title: Text
-    principal: Text
+class EvidenceSubmission(DomainModel):
     records: Annotated[list[CloudTrailRecord], Field(max_length=2000)]
     provenance: CollectionContext = Field(default_factory=CollectionContext)
 
@@ -57,6 +68,11 @@ class InvestigationRequest(DomainModel):
     @classmethod
     def unwrap_export(cls, value: object) -> object:
         return export_records(value)
+
+
+class InvestigationRequest(EvidenceSubmission):
+    title: Text
+    principal: Text
 
 
 class Finding(DomainModel):
@@ -87,6 +103,8 @@ class GraphEdge(DomainModel):
     source: str = Field(alias="from", min_length=1)
     relationship: Relationship
     target: str = Field(alias="to", min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: CorrelationConfidence | None = None
 
 
 class AdvisoryAction(DomainModel):
@@ -138,6 +156,7 @@ class InvestigationResult(DomainModel):
     graph: list[GraphEdge]
     assessment: RiskAssessment
     action: AdvisoryAction | None
+    correlation: CorrelationResult | None = None
 
     @model_validator(mode="after")
     def validate_references(self) -> Self:
@@ -149,6 +168,9 @@ class InvestigationResult(DomainModel):
         }
         if self.action:
             references.update(self.action.evidence_ids)
+        if self.correlation:
+            references.update(self.correlation.supporting_ids())
+        references.update(item for edge in self.graph for item in edge.evidence_ids)
         references.update(
             item.linked_from_evidence_id for item in self.evidence if item.linked_from_evidence_id
         )
@@ -158,6 +180,7 @@ class InvestigationResult(DomainModel):
 
 
 class InvestigationReport(InvestigationResult):
+    previous_investigation_id: str | None = None
     id: Text
     created_at: Timestamp
     reviews: list[AnalystReview] = Field(default_factory=list)

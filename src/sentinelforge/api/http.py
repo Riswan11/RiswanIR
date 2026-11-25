@@ -9,7 +9,13 @@ from importlib.resources import files
 from .. import frontend
 from ..core.errors import NotFoundError
 from ..core.fields import now
-from ..models import ActionDecision, AnalystFeedback, ApprovalDecision, InvestigationRequest
+from ..models import (
+    ActionDecision,
+    AnalystFeedback,
+    ApprovalDecision,
+    EvidenceSubmission,
+    InvestigationRequest,
+)
 from ..security.host import is_local_host
 
 LOGGER = logging.getLogger(__name__)
@@ -90,6 +96,11 @@ class Application:
             if method == "GET" and suffix in {"", "/evidence", "/graph"}:
                 report = self.store.get(investigation_id).payload()
                 return 200, report[suffix[1:]] if suffix else report
+            if method == "GET" and suffix == "/correlation":
+                return 200, self.store.get(investigation_id).payload().get("correlation")
+            if method == "POST" and suffix == "/revisions":
+                supplement = EvidenceSubmission.model_validate(self.body(env))
+                return 201, self.store.revise(investigation_id, supplement).payload()
             if method == "POST" and suffix == "/feedback":
                 feedback = AnalystFeedback.model_validate(self.body(env))
                 return 201, self.store.feedback(investigation_id, feedback).payload()

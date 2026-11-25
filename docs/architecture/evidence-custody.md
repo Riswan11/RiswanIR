@@ -1,6 +1,6 @@
 # Evidence custody and forensic export
 
-When creating a case, the application stages source records before normalization in the same transaction as the report. A rejected investigation rolls back its raw records and receipts. Raw storage preserves each parsed record's original JSON values using canonical JSON. It does not preserve the container file, original whitespace, property order, duplicate properties, or transport bytes.
+When creating a case, the application stages source records before normalization in the same transaction as the report. A rejected investigation rolls back its raw records and receipts. Raw storage preserves parsed JSON values after redacting recognized credential secret fields. It does not preserve the container file, original whitespace, property order, duplicate properties, or transport bytes. Existing raw records are not retroactively rewritten.
 
 SHA-256 addresses deduplicated raw records. Each submitted occurrence gets a receipt tied to its investigation and position, including identical records submitted in different cases. The optional request-level provenance object accepts source location, collection method, collection time and collector ID. The receipt also records the provider, service, event ID, AWS account and region when present, observed timestamp, and ingestion time. Collection labels are operator assertions.
 

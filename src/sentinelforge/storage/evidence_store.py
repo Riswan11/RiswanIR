@@ -13,10 +13,11 @@ from ..models.chain_of_custody import (
     EvidenceIntegrity,
     EvidenceRetentionPolicy,
 )
+from ..models.correlation import CorrelationResult
 from ..models.evidence import RawEvidence
 from ..models.provenance import EvidenceProvenance, EvidenceReference, EvidenceTransformation
 
-NORMALIZATION_VERSION = "cloudtrail-1"
+NORMALIZATION_VERSION = "cloudtrail-2"
 SCHEMA_VERSION = "1"
 
 # Additive, idempotent migration. Case overlays and legacy report JSON remain intact.
@@ -47,7 +48,11 @@ CREATE TABLE IF NOT EXISTS evidence_custody (
 
 
 def ingest(
-    db: sqlite3.Connection, case_id: str, request: InvestigationRequest, timestamp: str
+    db: sqlite3.Connection,
+    case_id: str,
+    request: InvestigationRequest,
+    timestamp: str,
+    inherited: tuple[EvidenceProvenance, ...] = (),
 ) -> dict[str, EvidenceProvenance]:
     by_event: dict[str, EvidenceProvenance] = {}
     receipts = []
@@ -73,6 +78,10 @@ def ingest(
             ingested_at=timestamp,
             raw_integrity_hash=digest,
         )
+        if index < len(inherited):
+            origin = inherited[index].model_copy(
+                update={"evidence_id": raw_id, "raw_integrity_hash": digest}
+            )
         db.execute("INSERT OR IGNORE INTO raw_evidence VALUES (?, ?)", (raw_id, digest))
         db.execute("INSERT OR IGNORE INTO raw_evidence_payloads VALUES (?, ?)", (raw_id, payload))
         stored = db.execute(
@@ -84,7 +93,7 @@ def ingest(
             raise RuntimeError("Stored raw evidence does not match its address.")
         db.execute(
             "INSERT INTO evidence_receipts VALUES (?, ?, ?, ?, ?)",
-            (case_id, index, raw_id, timestamp, origin.model_dump_json()),
+            (case_id, index, raw_id, origin.ingested_at, origin.model_dump_json()),
         )
         receipts.append(origin.model_dump(mode="json"))
         by_event[event_id.strip()] = origin
@@ -101,6 +110,7 @@ def record_transformations(
     timestamp: str,
     evidence: list[Evidence],
     origins: dict[str, EvidenceProvenance],
+    correlation: CorrelationResult | None,
 ) -> list[Evidence]:
     results = []
     transformations = []
@@ -118,7 +128,11 @@ def record_transformations(
             normalized_integrity_hash=linked.integrity_hash,
             normalization_version=NORMALIZATION_VERSION,
             schema_version=SCHEMA_VERSION,
-            configuration={"principal": request.principal, "encoding": "canonical-json-v1"},
+            configuration={
+                "principal": request.principal,
+                "encoding": "canonical-json-v1",
+                "redaction": "credential-fields-v1",
+            },
         )
         db.execute(
             "INSERT INTO evidence_transformations VALUES (?, ?, ?, ?)",
@@ -132,7 +146,12 @@ def record_transformations(
         case_id,
         "normalized",
         timestamp,
-        {"transformations_digest": sha256(canonical_json(transformations))},
+        {
+            "transformations_digest": sha256(canonical_json(transformations)),
+            "correlation_digest": sha256(canonical_json(correlation.payload()))
+            if correlation
+            else None,
+        },
     )
     return results
 
@@ -213,7 +232,21 @@ def raw_records(db: sqlite3.Connection, case_id: str) -> list[RawEvidence]:
     ]
 
 
-def verify(db: sqlite3.Connection, case_id: str, evidence: list[Evidence]) -> EvidenceIntegrity:
+def original_records(db: sqlite3.Connection, case_id: str) -> list[dict[str, object]]:
+    rows = db.execute(
+        """SELECT p.payload FROM evidence_receipts r LEFT JOIN raw_evidence_payloads p
+           ON p.raw_id = r.raw_id WHERE r.investigation_id = ? ORDER BY r.ordinal""",
+        (case_id,),
+    )
+    return [json.loads(row["payload"]) for row in rows]
+
+
+def verify(
+    db: sqlite3.Connection,
+    case_id: str,
+    evidence: list[Evidence],
+    correlation: CorrelationResult | None,
+) -> EvidenceIntegrity:
     problems = []
     history = custody(db, case_id)
     origins = receipts(db, case_id)
@@ -238,11 +271,14 @@ def verify(db: sqlite3.Connection, case_id: str, evidence: list[Evidence]) -> Ev
     if len(history) < 2 or [item.action for item in history[:2]] != ["ingested", "normalized"]:
         problems.append("Evidence custody anchors unavailable.")
     else:
+        expected = sha256(canonical_json(correlation.payload())) if correlation else None
+        if history[1].details.get("correlation_digest") != expected:
+            problems.append("Correlation snapshot verification failed.")
         for anchor, name, items in (
             (history[0], "receipts_digest", origins),
             (history[1], "transformations_digest", versions),
         ):
-            digest = sha256(canonical_json([item.model_dump(mode="json") for item in items]))
+            digest = sha256(canonical_json([item.payload() for item in items]))
             if anchor.details.get(name) != digest:
                 problems.append(f"Evidence metadata verification failed for {name}.")
     seen_raw = set()

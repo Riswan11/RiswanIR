@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from sentinelforge.evidence import cli
+from sentinelforge.evidence.redaction import redact_record
 from sentinelforge.models.chain_of_custody import EvidenceRetentionPolicy
 from sentinelforge.storage.sqlite import SCHEMA, Store
 
@@ -31,7 +32,7 @@ def test_raw_deduplication_preserves_receipts_and_versioned_references(
     assert receipts[0]["collector_id"] == "workstation"
     assert receipts[0]["source_authenticity_verified"] is False
     original = next(item["record"] for item in raw if item["record"]["eventID"] == "role-issued")
-    assert original == request.records[0]
+    assert original == redact_record(request.records[0])
     assert {item["parent_evidence_id"] for item in transforms} == {
         item["evidence_id"] for item in raw
     }
@@ -139,7 +140,7 @@ def test_cli_forensic_export_and_confirmation(
     assert cli.main() == 0
     assert "fixture-secret" not in capsys.readouterr().out
     original = output.read_bytes()
-    assert b"fixture-secret" in original
+    assert b"fixture-secret" not in original and b"[redacted]" in original
     assert cli.main() == 1 and output.read_bytes() == original
     monkeypatch.setattr(sys, "argv", [*arguments, "expire", "--days", "1"])
     with pytest.raises(SystemExit) as error:
