@@ -15,6 +15,7 @@ from riswan_platform.authorization.enforcement import AccessDenied
 from riswan_platform.identity.models import IdentityType
 from riswan_platform.identity.principal import require_principal
 from riswan_platform.secrets import CredentialLease, ProviderUnavailable, Result
+from riswan_platform.secrets.providers import AWSNamespace, CredentialRequest
 
 from .secrets import Secrets
 
@@ -52,6 +53,47 @@ class AWSSTS:
             return session, CredentialLease(id=uuid4(), expires_at=expiry)
         except Exception:
             raise ProviderUnavailable("Temporary credential issuance unavailable.") from None
+
+
+class AWSRoleOperation:
+    """Adapt a registered AWS collection operation to the shared lease contract."""
+
+    def __init__(
+        self,
+        registration: CredentialRequest,
+        config: ConnectorConfig,
+        provider: AWSSTS,
+        perform: Callable[[Any], None],
+    ):
+        account = config.account
+        namespace = registration.resource.namespace
+        if (
+            not isinstance(namespace, AWSNamespace)
+            or (namespace.account, namespace.region) != (account.account_id, account.region)
+            or account.role_arn != registration.resource.native_id
+            or not account.role_arn.startswith(f"arn:{namespace.partition}:")
+            or account.profile is not None
+            or account.external_id is None
+            or not account.external_id.get_secret_value()
+            or registration.audience != "sts.amazonaws.com"
+        ):
+            raise ValueError("AWS workload must match the registered role and account.")
+        self._registration = registration
+        self._config = config
+        self._provider = provider
+        self._perform = perform
+
+    def execute(self, request: CredentialRequest) -> CredentialLease:
+        if request != self._registration:
+            raise ProviderUnavailable("Credential target unavailable.")
+        try:
+            session, lease = self._provider.session(self._config, datetime.now(UTC))
+            if lease.expires_at <= datetime.now(UTC):
+                raise ValueError
+            self._perform(session)
+            return lease
+        except Exception:
+            raise ProviderUnavailable("Credential operation unavailable.") from None
 
 
 class CredentialBroker:

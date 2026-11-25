@@ -25,6 +25,8 @@ def main(*, local_launcher: bool = False):
             raise SystemExit("Set RISWAN_IR_OIDC_CONFIG and RISWAN_IR_IDENTITY_DB.")
         try:
             control, hosted = setting("CONTROL_DB"), setting("HOSTED_DB")
+            providers = setting("SECRETS_PROVIDERS")
+            collections = setting("COLLECTION_INTEGRATIONS")
             application = compose_identity(
                 Path(config),
                 Path(identity_db),
@@ -32,6 +34,8 @@ def main(*, local_launcher: bool = False):
                 control_db=Path(control) if control else None,
                 hosted_db=Path(hosted) if hosted else None,
                 secrets_region=setting("SECRETS_REGION"),
+                secrets_providers=Path(providers) if providers else None,
+                collection_config=Path(collections) if collections else None,
                 secrets_kms_key=setting("SECRETS_KMS_KEY"),
             )
         except (ValueError, OSError):

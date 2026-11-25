@@ -60,3 +60,35 @@ jobs:
         run: |
           bash .github/scripts/install-scanner.sh actionlint
           "$RUNNER_TEMP/scanners/actionlint" -color
+
+  sdk-install:
+    name: SDK install (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [base, aws, azure, gcp]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Install and verify the selected SDK group
+        env:
+          SDK_GROUP: ${{ matrix.group }}
+        run: |
+          case "$SDK_GROUP" in
+            base) python -m pip install . ;;
+            aws|azure|gcp) python -m pip install ".[${SDK_GROUP}]" ;;
+            *) exit 1 ;;
+          esac
+          python -m pip check
+          python -c "import riswan_app.identity_runtime"
+          case "$SDK_GROUP" in
+            aws) python -c "import boto3; import riswan_ir.connectors.cli" ;;
+            azure) python -c "from azure.identity import WorkloadIdentityCredential; from azure.keyvault.keys.crypto import CryptographyClient; from azure.keyvault.secrets import SecretClient" ;;
+            gcp) python -c "from google.auth import identity_pool; from google.cloud import kms, secretmanager" ;;
+          esac

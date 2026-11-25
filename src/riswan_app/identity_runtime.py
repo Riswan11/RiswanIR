@@ -13,6 +13,8 @@ from riswan_platform.identity.provider import OIDCProvider
 from riswan_platform.identity.service import IdentityService
 
 from .authorization_repository import AuthorizationRepository
+from .cloud_storage_config import load_secret_routing
+from .hosted_collection import CollectionAPI, load_collections
 from .hosted_product import HostedProduct
 from .identity_repository import SQLiteIdentityRepository
 from .secret_api import SecretAPI
@@ -30,12 +32,16 @@ def compose_identity(
     control_db: Path | None = None,
     hosted_db: Path | None = None,
     secrets_region: str | None = None,
+    secrets_providers: Path | None = None,
+    collection_config: Path | None = None,
     secrets_kms_key: str | None = None,
 ) -> IdentityApplication:
     if (secrets_region is None) != (secrets_kms_key is None) or (
         secrets_region and control_db is None
     ):
         raise ValueError("Configure a KMS key and region for the hosted secret provider.")
+    if (secrets_providers is not None or collection_config is not None) and control_db is None:
+        raise ValueError("Hosted providers require a control database.")
     if not has_crypto:
         raise ValueError("Install the identity extra for OIDC cryptographic verification.")
     if (control_db is None) != (hosted_db is None):
@@ -63,7 +69,7 @@ def compose_identity(
             identities.is_active_human,
             identities.is_active_workload,
         )
-        secret_routes = None
+        fallback = None
         if secrets_region and secrets_kms_key:
             client = boto3.client(
                 "secretsmanager",
@@ -76,18 +82,18 @@ def compose_identity(
                     ignore_configured_endpoint_urls=True,
                 ),
             )
-            secret_routes = SecretAPI(
-                Secrets(
-                    tenancy,
-                    AWSSecretsProvider(client, secrets_kms_key),
-                    environment="production",
-                )
-            )
+            fallback = AWSSecretsProvider(client, secrets_kms_key)
+        routing = load_secret_routing(secrets_providers) if secrets_providers else None
+        product = Store(hosted_db, hosted=True)
+        service = Secrets(tenancy, fallback, environment="production", routing=routing)
+        secret_routes = SecretAPI(service) if fallback or routing else None
+        collections = (
+            CollectionAPI(service, load_collections(collection_config, service, product))
+            if collection_config
+            else None
+        )
         routes = TenantAPI(
-            tenancy,
-            HostedProduct(tenancy, Store(hosted_db, hosted=True)),
-            settings.origin,
-            secret_routes,
+            tenancy, HostedProduct(tenancy, product), settings.origin, secret_routes, collections
         )
     return IdentityApplication(
         IdentityService(

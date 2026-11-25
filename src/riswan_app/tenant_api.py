@@ -17,6 +17,7 @@ from riswan_platform.tenancy import (
     OwnershipTransfer,
 )
 
+from .hosted_collection import CollectionAPI
 from .hosted_product import HostedProduct
 from .secret_api import BASE as SECRETS_BASE
 from .secret_api import SecretAPI
@@ -34,17 +35,27 @@ class TenantAPI:
         product: HostedProduct,
         origin: str,
         secrets: SecretAPI | None = None,
+        collections: CollectionAPI | None = None,
     ):
         self.tenancy = tenancy
         self.product = product
         self.origin = origin
         self.secrets = secrets
+        self.collections = collections
 
     def __call__(self, env, principal: VerifiedPrincipal, request_id: str):
         path = env["PATH_INFO"]
         if not (
             path in {BASE, SECRETS_BASE}
-            or path.startswith((BASE + "/", SECRETS_BASE + "/", "/v1/investigations", "/v1/memory"))
+            or path.startswith(
+                (
+                    BASE + "/",
+                    SECRETS_BASE + "/",
+                    "/v1/investigations",
+                    "/v1/memory",
+                    "/v1/integrations/",
+                )
+            )
         ):
             return None
         if (
@@ -74,6 +85,10 @@ class TenantAPI:
 
     def _route(self, env, principal: VerifiedPrincipal, request_id: str):
         method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
+        if path.startswith("/v1/integrations/"):
+            if self.collections is None:
+                raise AccessDenied
+            return self.collections.route(env, principal, request_id)
         if path == SECRETS_BASE or path.startswith(SECRETS_BASE + "/"):
             if self.secrets is None:
                 raise AccessDenied
