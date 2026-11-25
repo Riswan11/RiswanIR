@@ -97,10 +97,14 @@ def _token_digest(token: str) -> str:
 
 class Tenancy:
     def __init__(
-        self, authorization: AuthorizationRepository, active_human: Callable[[UUID], bool]
+        self,
+        authorization: AuthorizationRepository,
+        active_human: Callable[[UUID], bool],
+        active_workload: Callable[[UUID], bool] | None = None,
     ):
         self.authorization = authorization
         self._active_human = active_human
+        self.active_workload = active_workload or (lambda _: False)
         self.evaluator = Evaluator(authorization, authorization)
         with authorization.atomic() as db:
             for statement in SCHEMA.split(";"):
@@ -162,6 +166,16 @@ class Tenancy:
             request_id,
             request_id,
         )
+
+    def organization_id(self, tenant_id: UUID) -> UUID:
+        with self.authorization._connection() as db:
+            row = db.execute(
+                "SELECT organization_id FROM tenants WHERE id = ? AND status = 'active'",
+                (str(tenant_id),),
+            ).fetchone()
+        if row is None:
+            raise AccessDenied
+        return UUID(row[0])
 
     def organizations(self, principal: VerifiedPrincipal) -> list[Organization]:
         actor = self._actor(principal)
@@ -484,3 +498,30 @@ class Tenancy:
     def record_denial(self, principal: VerifiedPrincipal, request_id: str) -> None:
         with self.authorization.atomic() as db:
             self._audit(db, None, principal.identity.identity_id, "request_denied", request_id)
+
+    def register_workload(
+        self, principal, organization_id: UUID, target: UUID, request_id: str
+    ) -> None:
+        """Enroll a verified integration with an empty product policy."""
+        with self.authorization.transaction():
+            org, actor = self._admin(
+                principal,
+                organization_id,
+                request_id,
+                owner=True,
+                permission=Permission.SECRET_POLICY,
+            )
+            if not self.active_workload(target):
+                raise AccessDenied
+            tenant = str(org.tenant_id)
+            with self.authorization.atomic() as db:
+                changed = db.execute(
+                    """INSERT INTO organization_memberships VALUES (?, ?, 'viewer', ?, NULL)
+                    ON CONFLICT(tenant_id, identity_id) DO UPDATE SET
+                        joined_at = excluded.joined_at, revoked_at = NULL
+                    WHERE organization_memberships.revoked_at IS NOT NULL""",
+                    (tenant, str(target), datetime.now(UTC).isoformat()),
+                )
+                if changed.rowcount:
+                    self.authorization.replace_snapshot(target, org.tenant_id, SubjectPolicy())
+                    self._audit(db, tenant, actor, "workload_registered", request_id, str(target))

@@ -89,6 +89,29 @@ def service_client(session: Any, service: str, region: str) -> Any:
     return session.client(service, region_name=region, config=SDK_CONFIG, use_ssl=True, verify=True)
 
 
+def assume_read_only(
+    config: ConnectorConfig, session: Any, budget: RequestBudget
+) -> dict[str, Any]:
+    account = config.account
+    partition = session.get_partition_for_region(account.region)
+    if not account.role_arn or not account.role_arn.startswith(f"arn:{partition}:"):
+        raise CollectionFailure("assume_role", "partition_mismatch")
+    sts = service_client(session, "sts", account.region)
+    args = {
+        "RoleArn": account.role_arn,
+        "RoleSessionName": "SentinelForgeTelemetry",
+        "DurationSeconds": 900,
+        "Policy": session_policy(config, partition),
+    }
+    if account.external_id:
+        args["ExternalId"] = account.external_id.get_secret_value()
+    reply = budget.call("assume_role", lambda: sts.assume_role(**args))
+    issued = reply["Credentials"]
+    if not issued.get("SessionToken"):
+        raise CollectionFailure("assume_role", "temporary_credentials_required")
+    return issued
+
+
 def authenticated_session(config: ConnectorConfig, budget: RequestBudget) -> Any:
     account = config.account
     try:
@@ -100,19 +123,7 @@ def authenticated_session(config: ConnectorConfig, budget: RequestBudget) -> Any
         if account.role_arn and not account.role_arn.startswith(f"arn:{partition}:"):
             raise CollectionFailure("assume_role", "partition_mismatch")
         if account.role_arn:
-            sts = service_client(session, "sts", account.region)
-            args = {
-                "RoleArn": account.role_arn,
-                "RoleSessionName": "SentinelForgeTelemetry",
-                "DurationSeconds": 900,
-                "Policy": session_policy(config, partition),
-            }
-            if account.external_id:
-                args["ExternalId"] = account.external_id.get_secret_value()
-            reply = budget.call("assume_role", lambda: sts.assume_role(**args))
-            issued = reply["Credentials"]
-            if not issued.get("SessionToken"):
-                raise CollectionFailure("assume_role", "temporary_credentials_required")
+            issued = assume_read_only(config, session, budget)
             session = boto3.Session(
                 aws_access_key_id=issued["AccessKeyId"],
                 aws_secret_access_key=issued["SecretAccessKey"],

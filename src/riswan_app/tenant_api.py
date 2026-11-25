@@ -18,6 +18,8 @@ from riswan_platform.tenancy import (
 )
 
 from .hosted_product import HostedProduct
+from .secret_api import BASE as SECRETS_BASE
+from .secret_api import SecretAPI
 from .tenancy import Tenancy
 
 LOGGER = logging.getLogger(__name__)
@@ -26,14 +28,24 @@ NOT_FOUND = {"error": "Resource not found."}
 
 
 class TenantAPI:
-    def __init__(self, tenancy: Tenancy, product: HostedProduct, origin: str):
+    def __init__(
+        self,
+        tenancy: Tenancy,
+        product: HostedProduct,
+        origin: str,
+        secrets: SecretAPI | None = None,
+    ):
         self.tenancy = tenancy
         self.product = product
         self.origin = origin
+        self.secrets = secrets
 
     def __call__(self, env, principal: VerifiedPrincipal, request_id: str):
         path = env["PATH_INFO"]
-        if not (path == BASE or path.startswith((BASE + "/", "/v1/investigations", "/v1/memory"))):
+        if not (
+            path in {BASE, SECRETS_BASE}
+            or path.startswith((BASE + "/", SECRETS_BASE + "/", "/v1/investigations", "/v1/memory"))
+        ):
             return None
         if (
             env["REQUEST_METHOD"] != "GET"
@@ -62,6 +74,10 @@ class TenantAPI:
 
     def _route(self, env, principal: VerifiedPrincipal, request_id: str):
         method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
+        if path == SECRETS_BASE or path.startswith(SECRETS_BASE + "/"):
+            if self.secrets is None:
+                raise AccessDenied
+            return self.secrets.route(env, principal, request_id)
         if path.startswith(("/v1/investigations", "/v1/memory")):
             key = env.get("HTTP_X_RISWAN_TENANT", "")
             if not re.fullmatch(r"[0-9a-f-]{36}", key):
@@ -124,6 +140,12 @@ class TenantAPI:
         if method == "PUT" and suffix == "/members/role":
             membership = InvitationRequest.model_validate(Application.body(env))
             self.tenancy.change_role(principal, organization_id, membership, request_id)
+            return 204, None
+        if method == "POST" and suffix == "/workloads":
+            workload = OwnershipTransfer.model_validate(Application.body(env))
+            self.tenancy.register_workload(
+                principal, organization_id, workload.identity_id, request_id
+            )
             return 204, None
         if method == "POST" and suffix == "/ownership":
             transfer = OwnershipTransfer.model_validate(Application.body(env))

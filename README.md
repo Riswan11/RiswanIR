@@ -126,3 +126,7 @@ See [centralized authentication](docs/architecture/authentication.md) for OIDC c
 ## Organizations and tenant access
 
 [Hosted tenant setup, organization APIs, and ownership](docs/architecture/organization-tenancy.md)
+
+## Secrets and credentials
+
+[Architecture and lifecycle](docs/architecture/secrets-management.md) ? [Configuration and operations](docs/operations/secrets-configuration.md) ? [Threat model](docs/security/secrets-threat-model.md)
