@@ -16,6 +16,8 @@ For your own data, paste a CloudTrail log with a top-level `Records` array, a `l
 
 The local SQLite database defaults to `sentinelforge.sqlite3`. Set `SENTINELFORGE_DB` to choose a different file or `SENTINELFORGE_PORT` to change the port.
 
+To install the package, run `python -m pip install .` and start it with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
+
 ## Investigation workflow
 
 - Match successful calls to the starting ARN. Follow subsequent calls by joining the access key ID returned by STS or IAM to the caller's access key ID, including across chained roles and accounts. Edges cite the issuance event. Missing key IDs and equal recorded timestamps can leave gaps. [AWS CloudTrail IAM and STS examples](https://docs.aws.amazon.com/IAM/latest/UserGuide/cloudtrail-integration.html)

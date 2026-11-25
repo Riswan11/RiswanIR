@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 *.docx
 local-data/
+build/
+dist/
+*.egg-info/

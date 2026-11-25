@@ -86,5 +86,5 @@ class InvestigationWorkflow(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(self.request("POST", base, raw=raw)[0], 400)
         self.assertEqual(self.request("GET", base + "/" + "0" * 32)[0], 404)
-        with patch.object(Store, "list", side_effect=KeyError("private details")), self.assertLogs("server", level="ERROR"):
+        with patch.object(Store, "list", side_effect=KeyError("private details")), self.assertLogs(Application.__module__, level="ERROR"):
             self.assertEqual(self.request("GET", base), (500, {"error": "Internal server error."}))
