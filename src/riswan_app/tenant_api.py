@@ -8,6 +8,7 @@ from uuid import UUID
 from riswan_ir.api.http import Application
 from riswan_platform.authorization.enforcement import AccessDenied
 from riswan_platform.core.exceptions import ContextRequiredError
+from riswan_platform.data_protection import ProtectionDenied
 from riswan_platform.identity.models import VerifiedPrincipal
 from riswan_platform.tenancy import (
     Acceptance,
@@ -74,6 +75,8 @@ class TenantAPI:
             return 404, NOT_FOUND
         except (ValueError, RecursionError):
             return 400, {"error": "Invalid request."}
+        except ProtectionDenied:
+            return 409, {"error": "Data protection policy prevents this operation."}
         except FileExistsError:
             return 409, {"error": "Resource already has a decision."}
         except sqlite3.Error:

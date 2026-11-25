@@ -36,11 +36,17 @@ The PostgreSQL implementation currently covers the new protected-object table on
 
 Protected objects use AES-GCM with a random DEK and nonce. The authentication context binds tenant, product, resource type, resource ID and classification. DEKs are wrapped through registered managed-key instances. Rewrap verifies the original envelope before updating the wrapping metadata. The service validates residency across configured storage, processing, key and backup destinations. A global location fails strict residency. The local object store and SDK-shaped cloud adapters carry envelope bytes. Provider clients and destinations must be configured by trusted deployment code.
 
+## Hosted case legal holds
+
+An MFA-verified organization owner may create a hold with POST /v1/investigations/{case}/legal-holds and release it with POST /v1/investigations/{case}/legal-holds/{hold}/release. Both accept a reason in the body. Tenant and case ownership are verified before mutation. The product database retains actor, reason, timestamps, and request-correlated create and release history. Reasons are omitted from management responses.
+
+Hold updates and hosted history removal use the same SQLite write lock. If a hold commits first, removal is denied. If removal commits first, a later hold governs future operations. Memory removal becomes irreversible at its commit. Hosted bulk expiration remains disabled. A future whole-case provider deletion worker must coordinate its irreversible provider operation with legal holds in the production persistence layer.
+
 ## Remaining integration
 
 - Move existing hosted repositories onto PostgreSQL with tenant-aware foreign keys and a verified ownership migration.
 - Move the tenant-separated raw evidence payloads from SQLite text storage to encrypted protected objects, preserve custody identifiers, and route original and derived views separately.
-- Persist retention, legal holds, deletion workflow state, and recovery tombstones before exposing management or authorized destruction.
+- Persist hosted retention, whole-case deletion workflow state, and recovery tombstones before exposing authorized destruction.
 - Integrate provider residency and key configuration with hosted repositories, backup tooling, jobs and operational audit. Validate cloud version deletion separately from API-level removal.
 - Extend graph and memory protection to persisted export and backup artifacts. Define tenant-scoped storage contracts for future RAG, vector indexes and agent memory.
 

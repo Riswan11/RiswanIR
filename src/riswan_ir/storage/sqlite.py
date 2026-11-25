@@ -13,6 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from riswan_platform.core.context import require_context
 from riswan_platform.core.exceptions import ContextRequiredError
+from riswan_platform.data_protection import LegalHold, Ownership
 from riswan_security_data.provenance import EvidenceProvenance
 
 from ..core.config import setting
@@ -59,7 +60,7 @@ from ..risk import repository as risk_repository
 from ..risk.engine import calculate as calculate_risk
 from ..risk.models import Assessment, Reassessment, Trigger
 from ..risk.reassessment import score_case
-from . import checkpoint_store, evidence_store
+from . import checkpoint_store, evidence_store, legal_holds
 from .review_store import latest_disposition
 
 SCHEMA = """
@@ -138,6 +139,7 @@ class Store:
                 + temporal_repository.SCHEMA
                 + risk_repository.SCHEMA
                 + memory_repository.SCHEMA
+                + legal_holds.SCHEMA
             )
             db.execute("BEGIN IMMEDIATE")
             evidence_store.split_owned_payloads(db)
@@ -349,10 +351,42 @@ class Store:
             self._require_case(db, case_id)
             promote(db, self._stored_case(db, case_id), feedback, memory_policy(), now())
 
+    def change_legal_hold(
+        self, case_id: str, reason: str, *, release: UUID | None = None
+    ) -> LegalHold:
+        if not self.hosted:
+            raise ContextRequiredError("Legal holds require hosted ownership.")
+        tenant = self._tenant()
+        context = require_context()
+        identifier = release or uuid4()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._require_case(db, case_id)
+            row = legal_holds.change(
+                db,
+                case_id,
+                str(identifier),
+                context.actor_id,
+                now(),
+                reason,
+                context.request_id,
+                release=release is not None,
+            )
+            if row is None:
+                raise NotFoundError("Legal hold unavailable.")
+            return LegalHold(
+                id=identifier,
+                owner=Ownership(tenant_id=tenant, product_id=context.product_id),
+                investigation_id=case_id,
+                created_at=utc_timestamp(row[0]),
+                released_at=utc_timestamp(row[1]) if row[1] else None,
+            )
+
     def memory_remove(self, case_id: str) -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self._require_case(db, case_id)
+            legal_holds.require_unheld(db, case_id)
             self._stored_case(db, case_id)
             memory_repository.remove(db, case_id, memory_policy(), now())
 

@@ -55,3 +55,15 @@ class DataPolicy(Model):
     @property
     def encrypted(self) -> bool:
         return self.classification in {Classification.CONFIDENTIAL, Classification.RESTRICTED}
+
+
+class HoldReason(Model):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class LegalHold(Model):
+    id: UUID
+    owner: Ownership
+    investigation_id: str
+    created_at: AwareDatetime
+    released_at: AwareDatetime | None = None

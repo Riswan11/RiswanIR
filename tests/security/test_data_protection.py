@@ -214,3 +214,42 @@ def test_raw_payload_migration_preserves_hashes_and_separates_shared_evidence(
             assert migrated.verify_evidence(report.id).valid
     with pytest.raises(NotFoundError):
         Store(store.path).get(a.id)
+
+
+def test_case_hold_serializes_with_memory_removal(tmp_path, investigation_request):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from riswan_ir.storage import legal_holds
+
+    store = Store(tmp_path / "hosted.sqlite3", hosted=True)
+    actor = context()
+    with bind_context(actor):
+        report = store.create(investigation_request)
+    started = Event()
+
+    def remove():
+        with bind_context(actor):
+            started.set()
+            store.memory_remove(report.id)
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            legal_holds.change(
+                db,
+                report.id,
+                str(uuid4()),
+                actor.actor_id,
+                datetime.now(UTC).isoformat(),
+                "Preserve records",
+                actor.request_id,
+                release=False,
+            )
+            pending = worker.submit(remove)
+            assert started.wait(2)
+            assert not pending.done()
+        with pytest.raises(ProtectionDenied):
+            pending.result(timeout=5)
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM memory_tombstones").fetchone()[0] == 0

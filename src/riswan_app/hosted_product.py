@@ -1,13 +1,23 @@
 """Product ownership directory and authenticated route composition."""
 
+import re
+from dataclasses import replace
 from uuid import UUID
 
 from riswan_ir.api.http import Application
 from riswan_ir.product import IRProduct
 from riswan_ir.storage.sqlite import Store
-from riswan_platform.authorization import Resource, Scope, ScopeType
+from riswan_platform.authorization import (
+    AuthorizationRequest,
+    Permission,
+    Resource,
+    Scope,
+    ScopeType,
+)
 from riswan_platform.authorization.enforcement import AccessDenied, Enforcement
-from riswan_platform.core.context import bind_context
+from riswan_platform.core.context import bind_context, require_context
+from riswan_platform.core.exceptions import NotFoundError
+from riswan_platform.data_protection import HoldReason
 from riswan_platform.identity.models import VerifiedPrincipal
 
 from .tenancy import Tenancy
@@ -85,6 +95,8 @@ class HostedProduct:
             if context is None:
                 raise AccessDenied
             with bind_context(context):
+                if "/legal-holds" in env["PATH_INFO"]:
+                    return self._legal_hold(env, principal)
                 resources = IRResources(self.store, tenant_id)
                 guard = Enforcement(
                     self.tenancy.evaluator, resources, self.tenancy.authorization.transaction
@@ -93,3 +105,27 @@ class HostedProduct:
                     self.store, product=IRProduct(), tenant_id=tenant_id, enforcement=guard
                 )
                 return app.route(env)
+
+    def _legal_hold(self, env, principal: VerifiedPrincipal):
+        match = re.fullmatch(
+            r"/v1/investigations/([a-f0-9]{32})/legal-holds(?:/([a-f0-9-]{36})/release)?",
+            env["PATH_INFO"],
+        )
+        if match is None or env["REQUEST_METHOD"] != "POST":
+            raise AccessDenied
+        context = require_context()
+        resource = Resource(
+            context.tenant_id, "platform", Scope(ScopeType.ORGANIZATION, str(context.tenant_id))
+        )
+        request = AuthorizationRequest(
+            principal, replace(context, product_id="platform"), Permission.LEGAL_HOLD, resource
+        )
+        if not self.tenancy.evaluator.evaluate(request).allowed:
+            raise AccessDenied
+        reason = HoldReason.model_validate(Application.body(env)).reason
+        try:
+            release = UUID(match[2]) if match[2] else None
+            hold = self.store.change_legal_hold(match[1], reason, release=release)
+        except NotFoundError as exc:
+            raise AccessDenied from exc
+        return (200 if release else 201), hold.model_dump(mode="json")

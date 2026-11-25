@@ -752,3 +752,54 @@ def test_hosted_aws_collection_uses_registered_workload_and_preserves_ownership(
         == 204
     )
     assert call(app, endpoint, "POST", authorization=bearer, tenant=tenant)[0] == 404
+
+
+def test_hosted_legal_holds_require_scope_and_persist(hosted_runtime, request_payload):
+    request, bob, bob_id, _, store = hosted_runtime
+    _, organization = request("/v1/organizations", "POST", payload={"name": "Retention"})
+    tenant = organization["tenant_id"]
+    org = f"/v1/organizations/{organization['id']}"
+    _, report = request("/v1/investigations", "POST", tenant=tenant, payload=request_payload)
+    case = f"/v1/investigations/{report['id']}"
+    path = case + "/legal-holds"
+    _, invitation = request(
+        org + "/invitations", "POST", payload={"identity_id": bob_id, "role": "viewer"}
+    )
+    assert (
+        request(
+            "/v1/organizations/invitations/accept",
+            "POST",
+            cookie=bob,
+            payload={"token": invitation["token"]},
+        )[0]
+        == 200
+    )
+    assert (
+        request(path, "POST", cookie=bob, tenant=tenant, payload={"reason": "Case review"})[0]
+        == 404
+    )
+    _, other = request("/v1/organizations", "POST", payload={"name": "Other"})
+    assert (
+        request(path, "POST", tenant=other["tenant_id"], payload={"reason": "Case review"})[0]
+        == 404
+    )
+    code, hold = request(path, "POST", tenant=tenant, payload={"reason": "Case review"})
+    assert code == 201 and hold["released_at"] is None
+    assert "reason" not in hold
+    from riswan_platform.core.context import PlatformContext, bind_context
+    from riswan_platform.data_protection import ProtectionDenied
+
+    actor = request("/v1/identity/me")[1]["identity_id"]
+    with bind_context(
+        PlatformContext(UUID(tenant), actor, "human", "ir", "request", "correlation")
+    ):
+        reopened = Store(store.path, hosted=True)
+        with pytest.raises(ProtectionDenied, match="under legal hold"):
+            reopened.memory_remove(report["id"])
+    release = path + "/" + hold["id"] + "/release"
+    assert request(release, "POST", tenant=tenant, payload={"reason": "Approved release"})[0] == 200
+    assert request(release, "POST", tenant=tenant, payload={"reason": "Already released"})[0] == 404
+    with store.connect() as db:
+        assert [
+            row[0] for row in db.execute("SELECT action FROM investigation_hold_audit ORDER BY id")
+        ] == ["created", "released"]
