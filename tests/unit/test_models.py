@@ -6,14 +6,23 @@ from pydantic import ValidationError
 
 from sentinelforge.investigation.analysis import analyze
 from sentinelforge.models import (
-    ActionDecision, AnalystFeedback, Evidence, GraphEdge, InvestigationReport, InvestigationRequest, RiskAssessment,
+    ActionDecision,
+    AnalystFeedback,
+    Evidence,
+    GraphEdge,
+    InvestigationReport,
+    InvestigationRequest,
+    RiskAssessment,
 )
-
 
 WHEN = "2025-01-01T00:00:00+00:00"
 PRINCIPAL = "arn:aws:iam::123456789012:user/test"
-EVENT = {"eventID": "key-created", "eventTime": WHEN, "eventName": "CreateAccessKey",
-         "userIdentity": {"arn": PRINCIPAL}}
+EVENT = {
+    "eventID": "key-created",
+    "eventTime": WHEN,
+    "eventName": "CreateAccessKey",
+    "userIdentity": {"arn": PRINCIPAL},
+}
 
 
 def request(records):
@@ -22,7 +31,11 @@ def request(records):
 
 class ModelTests(unittest.TestCase):
     def test_request_formats_and_constraints(self):
-        for records in ([EVENT], {"Records": [EVENT]}, {"Events": [{"CloudTrailEvent": json.dumps(EVENT)}]}):
+        for records in (
+            [EVENT],
+            {"Records": [EVENT]},
+            {"Events": [{"CloudTrailEvent": json.dumps(EVENT)}]},
+        ):
             self.assertEqual(request(records).records, [EVENT])
         for records in (None, [None], [EVENT] * 2001, {"Events": [{"CloudTrailEvent": "{"}]}):
             with self.subTest(kind=type(records)), self.assertRaises(ValidationError):
@@ -37,9 +50,23 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Evidence.model_validate({**evidence, "observed_at": "2025-01-01"})
         with self.assertRaises(ValidationError):
-            RiskAssessment(severity="low", score=71, score_max=70, claims=[], open_questions=[], observed_targets=[])
+            RiskAssessment(
+                severity="low",
+                score=71,
+                score_max=70,
+                claims=[],
+                open_questions=[],
+                observed_targets=[],
+            )
         with self.assertRaises(ValidationError):
-            RiskAssessment(severity="unknown", score=0, score_max=70, claims=[], open_questions=[], observed_targets=[])
+            RiskAssessment(
+                severity="unknown",
+                score=0,
+                score_max=70,
+                claims=[],
+                open_questions=[],
+                observed_targets=[],
+            )
         with self.assertRaises(ValidationError):
             AnalystFeedback(reviewer="Analyst", disposition="unknown")
         with self.assertRaises(ValidationError):
@@ -53,7 +80,9 @@ class ModelTests(unittest.TestCase):
         serialized = model.model_dump_json(by_alias=True, exclude_unset=True)
         payload = json.loads(serialized)
         self.assertEqual(InvestigationReport.model_validate_json(serialized), model)
-        self.assertEqual(payload["graph"][0], {"from": PRINCIPAL, "relationship": "CALLED", "to": "key-created"})
+        self.assertEqual(
+            payload["graph"][0], {"from": PRINCIPAL, "relationship": "CALLED", "to": "key-created"}
+        )
         evidence = payload["evidence"][0].copy()
         expected_hash = evidence.pop("integrity_hash")
         canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"))

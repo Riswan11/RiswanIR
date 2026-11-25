@@ -1,19 +1,28 @@
 """Evaluate scoring rules against normalized investigation evidence."""
 
-
-
-
 from ..models import Evidence, Finding, RiskAssessment, Severity
-
 
 RULES = (
     ("role-assumption", 20, "Role assumption observed", "T1078", ("AssumeRole",), 1),
     ("object-read", 20, "Successful object read recorded", None, ("GetObject",), 1),
     ("key-creation", 15, "Access key creation recorded", "T1098.001", ("CreateAccessKey",), 1),
     ("policy-attachment", 15, "User policy attachment recorded", "T1098", ("AttachUserPolicy",), 1),
-    ("repeated-key-creation", 10, "Multiple access key creations recorded", "T1098.001", ("CreateAccessKey",), 2),
-    ("role-then-key", 20, "Access key created downstream of a role assumption", "T1098.001",
-     ("AssumeRole", "CreateAccessKey"), 1),
+    (
+        "repeated-key-creation",
+        10,
+        "Multiple access key creations recorded",
+        "T1098.001",
+        ("CreateAccessKey",),
+        2,
+    ),
+    (
+        "role-then-key",
+        20,
+        "Access key created downstream of a role assumption",
+        "T1098.001",
+        ("AssumeRole", "CreateAccessKey"),
+        1,
+    ),
 )
 
 
@@ -46,9 +55,23 @@ def assess(evidence: list[Evidence]) -> RiskAssessment:
         event_ids = rule_evidence(evidence, events, minimum)
         if event_ids:
             score += weight
-            claims.append(Finding(rule_id=rule_id, summary=summary, evidence_ids=event_ids,
-                                  possible_attack_technique=technique))
-    severity = Severity.HIGH if score >= 50 else Severity.MEDIUM if score >= 25 else Severity.LOW if score else Severity.UNRATED
+            claims.append(
+                Finding(
+                    rule_id=rule_id,
+                    summary=summary,
+                    evidence_ids=event_ids,
+                    possible_attack_technique=technique,
+                )
+            )
+    severity = (
+        Severity.HIGH
+        if score >= 50
+        else Severity.MEDIUM
+        if score >= 25
+        else Severity.LOW
+        if score
+        else Severity.UNRATED
+    )
     targets = sorted({item.target for item in evidence if item.target})
     return RiskAssessment(
         severity=severity,

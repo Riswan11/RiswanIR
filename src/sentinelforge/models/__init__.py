@@ -3,11 +3,18 @@
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from ..core.fields import utc_timestamp
 from ..ingestion.exports import export_records
-
 
 Text = Annotated[str, StringConstraints(min_length=1, max_length=300, strip_whitespace=True)]
 Reviewer = Annotated[str, StringConstraints(min_length=1, max_length=100, strip_whitespace=True)]
@@ -79,6 +86,7 @@ class NormalizedEvent(DomainModel):
     region: str | None = None
     account_id: str | None = None
     recipient_account_id: str | None = None
+
 
 class Evidence(NormalizedEvent):
     query: Text
@@ -171,10 +179,14 @@ class InvestigationResult(DomainModel):
         ids = {item.id for item in self.evidence}
         if len(ids) != len(self.evidence):
             raise ValueError("Evidence IDs must be unique.")
-        references = {reference for finding in self.assessment.claims for reference in finding.evidence_ids}
+        references = {
+            reference for finding in self.assessment.claims for reference in finding.evidence_ids
+        }
         if self.action:
             references.update(self.action.evidence_ids)
-        references.update(item.linked_from_evidence_id for item in self.evidence if item.linked_from_evidence_id)
+        references.update(
+            item.linked_from_evidence_id for item in self.evidence if item.linked_from_evidence_id
+        )
         if not references <= ids:
             raise ValueError("Investigation references unknown evidence IDs.")
         return self

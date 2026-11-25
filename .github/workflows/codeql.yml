@@ -1,0 +1,63 @@
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "47 8 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: python
+          build-mode: none
+      - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          output: sarif
+      - name: Reject high or critical CodeQL findings
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = list(Path("sarif").glob("*.sarif"))
+          if not files:
+              raise SystemExit("CodeQL did not generate a SARIF report.")
+          violations = set()
+          for path in files:
+              for run in json.loads(path.read_text(encoding="utf-8"))["runs"]:
+                  components = [run["tool"]["driver"], *run["tool"].get("extensions", [])]
+                  severities = {
+                      rule["id"]: rule.get("properties", {}).get("security-severity", 0)
+                      for component in components for rule in component.get("rules", [])
+                  }
+                  for result in run.get("results", []):
+                      rule_id = result["ruleId"]
+                      if float(severities.get(rule_id, 0)) >= 7:
+                          violations.add(rule_id)
+          if violations:
+              raise SystemExit("High or critical CodeQL findings: " + ", ".join(sorted(violations)))
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: codeql-sarif
+          path: sarif/
+          retention-days: 14
+          if-no-files-found: error

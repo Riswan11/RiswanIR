@@ -1,28 +1,38 @@
 """Trace successful calls and downstream credential use."""
 
+from datetime import datetime
+
 from ..core.fields import mapping, text_field, utc_timestamp
 from ..evidence.integrity import seal_evidence
-from ..models import CloudTrailRecord, Evidence
+from ..models import CloudTrailRecord, Evidence, NormalizedEvent
 from ..normalization.cloudtrail import issued_credential, normalize
 
 
 def correlate(records: list[CloudTrailRecord], principal: str) -> list[Evidence]:
-    unique = {}
+    unique: dict[
+        str,
+        tuple[NormalizedEvent, str | None, tuple[str | None, str | None, datetime | None], bool],
+    ] = {}
     for record in records:
         item = normalize(record)
         identity = mapping(record, "userIdentity")
-        row = (item, text_field(identity, "accessKeyId"), issued_credential(record, item), bool(record.get("errorCode")))
+        row = (
+            item,
+            text_field(identity, "accessKeyId"),
+            issued_credential(record, item),
+            bool(record.get("errorCode")),
+        )
         if unique.setdefault(item.id, row) != row:
             raise ValueError("Conflicting CloudTrail records share an eventID.")
     ordered = sorted(unique.values(), key=lambda row: (row[0].observed_at, row[0].id))
     evidence = []
-    issued = {}
+    issued: dict[str | None, list[tuple[Evidence, str | None, datetime | None]]] = {}
     for item, key, credential, failed in ordered:
         if failed:
             continue
         parent = None
         timestamp = utc_timestamp(item.observed_at)
-        for origin, expected_arn, expires_at in issued.get(key, ()):
+        for origin, expected_arn, expires_at in issued.get(key, []):
             if origin.observed_at >= item.observed_at:
                 continue
             if expected_arn and item.principal and expected_arn != item.principal:

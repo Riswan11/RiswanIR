@@ -50,3 +50,29 @@ python -m pytest tests/ -v --cov=sentinelforge --cov-report=term-missing --cov-f
 ```
 
 Run a single layer with `python -m pytest tests/unit`, `python -m pytest tests/integration`, or `python -m pytest tests/security`. Tests use synthetic CloudTrail events and temporary SQLite databases. The suite runs without AWS credentials or network access after installation.
+
+## CI and security checks
+
+Pull requests targeting `main` and pushes to `main` run the following checks. The security scans also rerun weekly to pick up newly disclosed vulnerabilities. Dependabot checks Python dependencies and GitHub Actions weekly.
+
+| Required check | What it checks | Run artifact |
+| --- | --- | --- |
+| Tests | Pytest suite and 90% overall branch coverage gate on Python 3.11 | JUnit and coverage XML |
+| Code quality | Ruff formatting and lint, Mypy, and actionlint | Job log |
+| Security scans | Bandit medium-or-higher findings, pip-audit findings, Trivy high and critical findings, and Gitleaks history scan | JSON scan reports and resolved runtime requirements |
+| CodeQL analysis | Python analysis, with high and critical findings blocking the check | SARIF and GitHub code scanning results |
+| Generate SBOM | Syft inventory of installed runtime packages | CycloneDX JSON |
+
+Open **Actions**, select the workflow run, and download its artifacts. Gitleaks redacts reported secrets. See [the security policy](SECURITY.md) for triage and exceptions.
+
+To reproduce the Python checks locally:
+
+```sh
+python -m pip install ".[test,quality,security]"
+python -m ruff format --check .
+python -m ruff check .
+python -m mypy
+python -m bandit -r src -ll
+```
+
+GitHub branch protection requires pull requests and the five checks above. Workflow dependencies use full commit SHAs. The standalone scanner installer verifies release archive checksums.

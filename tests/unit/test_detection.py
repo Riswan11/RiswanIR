@@ -2,7 +2,7 @@ import unittest
 
 import pytest
 
-from tests.fixtures.cloudtrail import assumption, record, report, SESSION, KEY
+from tests.fixtures.cloudtrail import KEY, SESSION, assumption, record, report
 
 
 class DetectionTests(unittest.TestCase):
@@ -12,10 +12,18 @@ class DetectionTests(unittest.TestCase):
             ("object-read", [record("event", 10, "GetObject")], 20, ["event"]),
             ("key-creation", [record("event", 10, "CreateAccessKey")], 15, ["event"]),
             ("policy-attachment", [record("event", 10, "AttachUserPolicy")], 15, ["event"]),
-            ("repeated-key-creation", [record("first", 10, "CreateAccessKey"),
-                                       record("second", 11, "CreateAccessKey")], 25, ["first", "second"]),
-            ("role-then-key", [assumption("first", 10),
-                              record("second", 11, "CreateAccessKey", SESSION, KEY)], 55, ["first", "second"]),
+            (
+                "repeated-key-creation",
+                [record("first", 10, "CreateAccessKey"), record("second", 11, "CreateAccessKey")],
+                25,
+                ["first", "second"],
+            ),
+            (
+                "role-then-key",
+                [assumption("first", 10), record("second", 11, "CreateAccessKey", SESSION, KEY)],
+                55,
+                ["first", "second"],
+            ),
         ]
         for rule_id, records, score, evidence_ids in cases:
             with self.subTest(rule_id=rule_id):
@@ -27,16 +35,23 @@ class DetectionTests(unittest.TestCase):
     def test_counts_deduplicate_and_sequence_requires_credential_link(self):
         create = record("create", 12, "CreateAccessKey")
         assessment = report([create, create, assumption("role", 10)])["assessment"]
-        self.assertEqual({item["rule_id"] for item in assessment["claims"]}, {"role-assumption", "key-creation"})
+        self.assertEqual(
+            {item["rule_id"] for item in assessment["claims"]}, {"role-assumption", "key-creation"}
+        )
 
 
-@pytest.mark.parametrize(("operations", "score", "severity"), [
-    ([], 0, "unrated"),
-    (["CreateAccessKey"], 15, "low"),
-    (["CreateAccessKey", "CreateAccessKey"], 25, "medium"),
-    (["GetObject", "CreateAccessKey", "CreateAccessKey"], 45, "medium"),
-    (["AssumeRole", "CreateAccessKey", "AttachUserPolicy"], 50, "high"),
-])
+@pytest.mark.parametrize(
+    ("operations", "score", "severity"),
+    [
+        ([], 0, "unrated"),
+        (["CreateAccessKey"], 15, "low"),
+        (["CreateAccessKey", "CreateAccessKey"], 25, "medium"),
+        (["GetObject", "CreateAccessKey", "CreateAccessKey"], 45, "medium"),
+        (["AssumeRole", "CreateAccessKey", "AttachUserPolicy"], 50, "high"),
+    ],
+)
 def test_severity_thresholds(operations, score, severity):
-    assessment = report([record(str(index), index, event) for index, event in enumerate(operations)])["assessment"]
+    assessment = report(
+        [record(str(index), index, event) for index, event in enumerate(operations)]
+    )["assessment"]
     assert (assessment["score"], assessment["severity"]) == (score, severity)

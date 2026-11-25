@@ -12,7 +12,10 @@ def analyze(request: InvestigationRequest) -> InvestigationResult:
     return InvestigationResult(
         title=request.title,
         principal=request.principal,
-        plan=["Match the supplied events to the principal", "Follow credentials issued by matching events"],
+        plan=[
+            "Match the supplied events to the principal",
+            "Follow credentials issued by matching events",
+        ],
         evidence=evidence,
         graph=build_graph(evidence),
         assessment=assess(evidence),

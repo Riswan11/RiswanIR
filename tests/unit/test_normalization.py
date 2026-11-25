@@ -7,12 +7,19 @@ from sentinelforge.normalization.cloudtrail import issued_credential, normalize
 def test_normalized_fields_and_deduplication(investigation_request):
     records = investigation_request.records
     event = normalize(records[1])
-    assert (event.source_ip, event.user_agent, event.region, event.account_id, event.recipient_account_id) == (
-        "203.0.113.20", "synthetic-test-client", "us-east-1", "123456789012", "123456789012")
+    assert (
+        event.source_ip,
+        event.user_agent,
+        event.region,
+        event.account_id,
+        event.recipient_account_id,
+    ) == ("203.0.113.20", "synthetic-test-client", "us-east-1", "123456789012", "123456789012")
     rows = correlate([*records, records[0]], investigation_request.principal)
     assert [item.id for item in rows] == ["role-issued", "key-created", "key-used"]
     with pytest.raises(ValueError, match="Conflicting"):
-        correlate([*records, {**records[0], "awsRegion": "us-west-1"}], investigation_request.principal)
+        correlate(
+            [*records, {**records[0], "awsRegion": "us-west-1"}], investigation_request.principal
+        )
 
 
 @pytest.mark.parametrize("value", [None, {}, {"eventID": "invalid", "eventTime": "bad-date"}])

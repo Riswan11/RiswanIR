@@ -1,8 +1,5 @@
 """Build analyst advisories from evidence."""
 
-
-
-
 from ..models import AdvisoryAction, Evidence
 
 
