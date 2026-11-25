@@ -55,6 +55,7 @@ def retrieve(
     *,
     log: bool = True,
     authorization: MemoryPolicy | None = None,
+    case_ids: tuple[str, ...] | None = None,
 ) -> Intelligence:
     cutoff = utc_timestamp(as_of)
     if cutoff > utc_timestamp(current) or cutoff < utc_timestamp(profile.created_at):
@@ -73,7 +74,7 @@ def retrieve(
     )
     foreign_config = config.model_copy(update={"enabled_categories": cross_categories})
     after = (cutoff - timedelta(days=config.observation_days)).isoformat()
-    ids = repository.candidates(db, scopes, as_of, after)
+    ids = repository.candidates(db, scopes, as_of, after, case_ids)
     prior = []
     used = set(profile.raw_references)
     lineages = {profile.lineage_id}
