@@ -1,13 +1,13 @@
 """Load local memory settings and apply complete account-set authorization."""
 
-import os
 from pathlib import Path
 
+from ..core.config import setting
 from .models import MemoryPolicy
 
 
 def policy() -> MemoryPolicy:
-    path = os.getenv("SENTINELFORGE_MEMORY_POLICY")
+    path = setting("MEMORY_POLICY")
     if not path:
         return MemoryPolicy()
     with Path(path).open("rb") as stream:

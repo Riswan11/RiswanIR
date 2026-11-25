@@ -39,11 +39,16 @@ class Application:
             if not is_local_host(env.get("HTTP_HOST", "")):
                 status, result = (
                     400,
-                    {"error": "Use localhost or 127.0.0.1 to access SentinelForge."},
+                    {"error": "Use localhost or 127.0.0.1 to access Riswan IR."},
                 )
             elif env["PATH_INFO"] == "/" and env["REQUEST_METHOD"] == "GET":
                 result = files(frontend).joinpath("index.html").read_bytes()
                 status, content_type = 200, "text/html; charset=utf-8"
+            elif env["REQUEST_METHOD"] == "GET" and re.fullmatch(
+                r"/assets/ir-(?:logo|favicon)-(?:dark|light)\.svg", env["PATH_INFO"]
+            ):
+                result = files(frontend).joinpath(env["PATH_INFO"].rsplit("/", 1)[-1]).read_bytes()
+                status, content_type = 200, "image/svg+xml"
             else:
                 status, result = self.route(env)
             body = result if isinstance(result, bytes) else json.dumps(result).encode()

@@ -1,1 +1,1 @@
-"""SentinelForge tests."""
+"""Riswan IR tests."""

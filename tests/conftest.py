@@ -8,11 +8,11 @@ from wsgiref.validate import validator
 
 import pytest
 
-from sentinelforge.api.http import Application
-from sentinelforge.models import InvestigationRequest
-from sentinelforge.models.collection import CollectionRequest
-from sentinelforge.models.connector import ConnectorConfig
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.api.http import Application
+from riswan_ir.models import InvestigationRequest
+from riswan_ir.models.collection import CollectionRequest
+from riswan_ir.models.connector import ConnectorConfig
+from riswan_ir.storage.sqlite import Store
 
 
 @pytest.fixture
@@ -66,9 +66,9 @@ def fake_aws_session():
 def deterministic_metadata(monkeypatch):
     when = "2025-01-01T04:00:00+00:00"
     ids = iter(range(1, 1000))
-    monkeypatch.setattr("sentinelforge.storage.sqlite.uuid4", lambda: uuid.UUID(int=next(ids)))
-    monkeypatch.setattr("sentinelforge.storage.sqlite.now", lambda: when)
-    monkeypatch.setattr("sentinelforge.api.http.now", lambda: when)
+    monkeypatch.setattr("riswan_ir.storage.sqlite.uuid4", lambda: uuid.UUID(int=next(ids)))
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: when)
+    monkeypatch.setattr("riswan_ir.api.http.now", lambda: when)
 
 
 @pytest.fixture

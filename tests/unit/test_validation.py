@@ -2,8 +2,8 @@ from datetime import timezone
 
 import pytest
 
-from sentinelforge.core.fields import mapping, now, required, text_field, utc_timestamp
-from sentinelforge.ingestion.exports import export_records
+from riswan_ir.core.fields import mapping, now, required, text_field, utc_timestamp
+from riswan_ir.ingestion.exports import export_records
 
 
 @pytest.mark.parametrize("value", [None, 123, " ", "x" * 301])

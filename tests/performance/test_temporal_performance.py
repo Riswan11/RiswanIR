@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 
-from sentinelforge.correlation.temporal.engine import MAX_ACTIVE, run
-from sentinelforge.correlation.temporal.models import TemporalPolicy
-from sentinelforge.correlation.temporal.registry import default_rules, select_rules
+from riswan_ir.correlation.temporal.engine import MAX_ACTIVE, run
+from riswan_ir.correlation.temporal.models import TemporalPolicy
+from riswan_ir.correlation.temporal.registry import default_rules, select_rules
 from tests.integration.test_temporal_correlation import activity, create
 
 

@@ -1,8 +1,8 @@
 import pytest
 
-from sentinelforge.knowledge_graph.models import SecurityGraph
-from sentinelforge.knowledge_graph.ontology import REGISTRY, VERSION, Entity, Relation
-from sentinelforge.models import InvestigationRequest
+from riswan_ir.knowledge_graph.models import SecurityGraph
+from riswan_ir.knowledge_graph.ontology import REGISTRY, VERSION, Entity, Relation
+from riswan_ir.models import InvestigationRequest
 from tests.fixtures.cloudtrail import ROOT, record
 
 

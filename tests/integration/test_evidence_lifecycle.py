@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sentinelforge.evidence import cli
-from sentinelforge.evidence.redaction import redact_record
-from sentinelforge.models.chain_of_custody import EvidenceRetentionPolicy
-from sentinelforge.storage.sqlite import SCHEMA, Store
+from riswan_ir.evidence import cli
+from riswan_ir.evidence.redaction import redact_record
+from riswan_ir.models.chain_of_custody import EvidenceRetentionPolicy
+from riswan_ir.storage.sqlite import SCHEMA, Store
 
 
 def test_raw_deduplication_preserves_receipts_and_versioned_references(
@@ -46,7 +46,7 @@ def test_raw_deduplication_preserves_receipts_and_versioned_references(
         "verified",
         "export_prepared",
     ]
-    monkeypatch.setattr("sentinelforge.storage.sqlite.now", lambda: "2025-01-10T04:00:00+00:00")
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: "2025-01-10T04:00:00+00:00")
     next_case = store.create(request)
     assert next_case.evidence[0].reference.evidence_id != report.evidence[0].reference.evidence_id
     assert (
@@ -132,7 +132,7 @@ def test_cli_forensic_export_and_confirmation(
 ):
     report = store.create(investigation_request)
     output = tmp_path / "export.json"
-    arguments = ["sentinelforge-evidence", "--db", str(store.path)]
+    arguments = ["riswan_ir-evidence", "--db", str(store.path)]
     monkeypatch.setattr(sys, "argv", [*arguments, "verify", report.id])
     assert cli.main() == 0
     assert json.loads(capsys.readouterr().out)["raw_checked"] == 3

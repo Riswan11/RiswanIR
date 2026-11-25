@@ -1,5 +1,5 @@
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.models import Relationship
+from riswan_ir.investigation.analysis import analyze
+from riswan_ir.models import Relationship
 
 
 def test_graph_connects_actors_targets_and_issuance_events(investigation_request):

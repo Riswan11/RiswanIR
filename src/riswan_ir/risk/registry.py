@@ -1,10 +1,10 @@
 """Load validated policies and local scoring inventory."""
 
-import os
 from functools import lru_cache
 from importlib.resources import files
 from pathlib import Path
 
+from ..core.config import setting
 from ..detection.registry import MAX_BYTES, load_rule_rows
 from .models import RiskInventory, ScoringPolicy
 
@@ -22,7 +22,7 @@ def default_policy() -> ScoringPolicy:
 
 
 def active_policy() -> ScoringPolicy:
-    path = os.getenv("SENTINELFORGE_RISK_POLICY")
+    path = setting("RISK_POLICY")
     if not path:
         return default_policy()
     with Path(path).open("rb") as source:
@@ -34,7 +34,7 @@ def active_policy() -> ScoringPolicy:
 
 
 def inventory() -> RiskInventory:
-    path = os.getenv("SENTINELFORGE_RISK_INVENTORY")
+    path = setting("RISK_INVENTORY")
     if not path:
         return RiskInventory()
     with Path(path).open("rb") as source:

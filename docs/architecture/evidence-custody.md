@@ -13,9 +13,9 @@ SQLite adds the evidence tables on startup and leaves existing case rows intact.
 Install the project before using the evidence CLI. Use the same database path as the server.
 
 ```sh
-sentinelforge-evidence --db sentinelforge.sqlite3 verify INVESTIGATION_ID
-sentinelforge-evidence --db sentinelforge.sqlite3 export INVESTIGATION_ID ../forensic-export.json
-sentinelforge-evidence --db sentinelforge.sqlite3 expire --days 90 --confirm
+riswan-ir-evidence --db riswan-ir.sqlite3 verify INVESTIGATION_ID
+riswan-ir-evidence --db riswan-ir.sqlite3 export INVESTIGATION_ID ../forensic-export.json
+riswan-ir-evidence --db riswan-ir.sqlite3 expire --days 90 --confirm
 ```
 
 Export verifies the case before preparing the bundle. The bundle includes original records, normalized evidence and findings, provenance receipts in submission order, transformations, and custody records. It can contain secrets. The command creates a new output file and prints status only. Store exports outside repositories and shared folders. New POSIX database and export files use owner-only permissions. Existing databases and Windows files depend on workstation permissions or inherited ACLs.

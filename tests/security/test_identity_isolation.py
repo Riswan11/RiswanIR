@@ -1,8 +1,8 @@
 import copy
 
-from sentinelforge.correlation.aws import AWSIdentityResolver
-from sentinelforge.investigation.correlation import correlate_with_context
-from sentinelforge.models.identity import CloudIdentity
+from riswan_ir.correlation.aws import AWSIdentityResolver
+from riswan_ir.investigation.correlation import correlate_with_context
+from riswan_ir.models.identity import CloudIdentity
 from tests.integration.test_identity_correlation import ACTOR, ROLE, chain
 
 

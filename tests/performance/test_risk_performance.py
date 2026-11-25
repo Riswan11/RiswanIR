@@ -1,7 +1,7 @@
 from time import perf_counter
 
-from sentinelforge.risk.engine import calculate
-from sentinelforge.risk.registry import default_policy
+from riswan_ir.risk.engine import calculate
+from riswan_ir.risk.registry import default_policy
 from tests.unit.test_risk_engine import NOW, standard_inputs
 
 

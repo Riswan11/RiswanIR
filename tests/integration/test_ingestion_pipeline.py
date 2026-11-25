@@ -1,8 +1,8 @@
 from datetime import timedelta
 
-from sentinelforge.connectors.base import CollectedBatch, CollectionFailure
-from sentinelforge.ingestion.orchestrator import next_window, run_collection
-from sentinelforge.storage import checkpoint_store
+from riswan_ir.connectors.base import CollectedBatch, CollectionFailure
+from riswan_ir.ingestion.orchestrator import next_window, run_collection
+from riswan_ir.storage import checkpoint_store
 
 
 class Source:

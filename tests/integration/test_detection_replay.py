@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from sentinelforge.detection import cli
-from sentinelforge.detection.registry import RuleRegistry, default_registry
-from sentinelforge.models import InvestigationRequest
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.detection import cli
+from riswan_ir.detection.registry import RuleRegistry, default_registry
+from riswan_ir.models import InvestigationRequest
+from riswan_ir.storage.sqlite import Store
 from tests.fixtures.cloudtrail import ROOT, record
 
 RULE = "SF-AWS-DEF-001"
@@ -52,7 +52,7 @@ def test_replay_refuses_changed_archived_configuration(store):
 
 def test_cli_read_only_replay(store, monkeypatch, capsys):
     report = stored_detection(store)
-    args = ["sentinelforge-detect", report.id, "--db", str(store.path)]
+    args = ["riswan_ir-detect", report.id, "--db", str(store.path)]
     monkeypatch.setattr("sys.argv", [*args, "--version", f"{RULE}=1.0.0"])
     assert cli.main() == 0
     assert json.loads(capsys.readouterr().out)["findings"][0]["id"] == RULE
@@ -68,8 +68,8 @@ def test_detection_uses_trusted_configuration_files(tmp_path, monkeypatch):
     rules = tmp_path / "rules.yml"
     rule = default_registry().select({RULE: "1.0.0"})[0]
     rules.write_text(json.dumps([rule.model_dump(mode="json")]))
-    monkeypatch.setenv("SENTINELFORGE_DETECTION_CONTEXT", str(policy))
-    monkeypatch.setenv("SENTINELFORGE_DETECTION_RULES", str(rules))
+    monkeypatch.setenv("RISWAN_IR_DETECTION_CONTEXT", str(policy))
+    monkeypatch.setenv("RISWAN_IR_DETECTION_RULES", str(rules))
     store = Store(tmp_path / "cases.sqlite3")
     report = stored_detection(store)
     assert report.detection.execution.context_version == "1.1.0"

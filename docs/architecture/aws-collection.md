@@ -1,6 +1,6 @@
 # Read-only AWS collection
 
-The local `sentinelforge-collect` CLI reads CloudTrail Event History or gzip logs from S3. It runs alongside the existing local app and shares its SQLite evidence pipeline. The browser API has no connector or credential controls. Manual ingestion remains available.
+The local `riswan-ir-collect` CLI reads CloudTrail Event History or gzip logs from S3. It runs alongside the existing local app and shares its SQLite evidence pipeline. The browser API has no connector or credential controls. Manual ingestion remains available.
 
 | Source | Coverage | Cloud API calls |
 | --- | --- | --- |
@@ -65,9 +65,9 @@ Use an AWS SDK credential chain that supplies temporary credentials, such as an 
 
 ```sh
 python -m pip install .
-sentinelforge-collect --config ../aws-targets.json run
-sentinelforge-collect --config ../aws-targets.json run --watch
-sentinelforge-collect --config ../aws-targets.json status
+riswan-ir-collect --config ../aws-targets.json run
+riswan-ir-collect --config ../aws-targets.json run --watch
+riswan-ir-collect --config ../aws-targets.json status
 ```
 
 The first run collects a trailing window. Later runs continue from a SQLite checkpoint with configured overlap. The runner saves a pending window before collection so an interruption can resume the same range, including on the first run. Earlier pages can have committed before a later failure. Retry skips already committed source receipts. A checkpoint moves forward only after every batch in the reserved window persists successfully. A repeated event at another S3 location retains the additional provenance. Conflicting payloads for an existing event ID within one scope fail the run.

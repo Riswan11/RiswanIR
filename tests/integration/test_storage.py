@@ -3,9 +3,9 @@ import sqlite3
 
 import pytest
 
-from sentinelforge.core.errors import NotFoundError
-from sentinelforge.models import ActionDecision, AnalystFeedback
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.core.errors import NotFoundError
+from riswan_ir.models import ActionDecision, AnalystFeedback
+from riswan_ir.storage.sqlite import Store
 
 
 def test_persists_and_reopens_reports_reviews_and_decisions(store, investigation_request):

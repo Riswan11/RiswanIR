@@ -1,6 +1,6 @@
 # Temporal threat correlation
 
-SentinelForge builds possible incidents from correlated CloudTrail observations in one investigation revision. Canonical events supply operation, provider, identity and resource attributes. The security graph supplies evidence for the identity, session, resource, and credential-lineage joins. Context and existing detection findings can qualify a stage. Time proximity alone cannot join events.
+Riswan IR builds possible incidents from correlated CloudTrail observations in one investigation revision. Canonical events supply operation, provider, identity and resource attributes. The security graph supplies evidence for the identity, session, resource, and credential-lineage joins. Context and existing detection findings can qualify a stage. Time proximity alone cannot join events.
 
 ```mermaid
 flowchart LR
@@ -16,9 +16,9 @@ The matcher processes UTC occurrence time and uses event IDs to make input order
 
 ## Trusted policy and rules
 
-The bundled [rule catalog](../../src/sentinelforge/correlation/temporal/aws-rules.yml) is a safely parsed YAML list. A rule declares `id`, `name`, `version`, `window_minutes`, `group_by`, `stages`, `severity`, and `recommendation`. It can specify a minimum stage count, enablement, suppression duration, ATT&CK mappings, and cross-account eligibility. A stage specifies AWS service, allowed operations, outcomes, required predicates and optional finding-rule IDs. Stage counts require distinct matching events. Optional interior stages may be omitted. A `requires_chain` stage needs a directed evidence-backed credential transition. Rule versions are immutable once published.
+The bundled [rule catalog](../../src/riswan_ir/correlation/temporal/aws-rules.yml) is a safely parsed YAML list. A rule declares `id`, `name`, `version`, `window_minutes`, `group_by`, `stages`, `severity`, and `recommendation`. It can specify a minimum stage count, enablement, suppression duration, ATT&CK mappings, and cross-account eligibility. A stage specifies AWS service, allowed operations, outcomes, required predicates and optional finding-rule IDs. Stage counts require distinct matching events. Optional interior stages may be omitted. A `requires_chain` stage needs a directed evidence-backed credential transition. Rule versions are immutable once published.
 
-`SENTINELFORGE_TEMPORAL_RULES` can point to a trusted replacement YAML file. `SENTINELFORGE_TEMPORAL_POLICY` can point to a trusted JSON file. A policy may use the detection inventory schema under `enrichment`. When that property is omitted, it inherits the locally configured detection inventory. The same schema supports time-limited rule exclusions scoped to matching attributes. Cross-account transitions are disabled by default. For example:
+`RISWAN_IR_TEMPORAL_RULES` can point to a trusted replacement YAML file. `RISWAN_IR_TEMPORAL_POLICY` can point to a trusted JSON file. A policy may use the detection inventory schema under `enrichment`. When that property is omitted, it inherits the locally configured detection inventory. The same schema supports time-limited rule exclusions scoped to matching attributes. Cross-account transitions are disabled by default. For example:
 
 ```json
 {

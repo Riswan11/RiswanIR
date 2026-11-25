@@ -1,7 +1,7 @@
 import pytest
 
-from sentinelforge.investigation.correlation import correlate
-from sentinelforge.normalization.cloudtrail import issued_credential, normalize
+from riswan_ir.investigation.correlation import correlate
+from riswan_ir.normalization.cloudtrail import issued_credential, normalize
 
 
 def test_normalized_fields_and_deduplication(investigation_request):

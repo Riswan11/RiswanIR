@@ -1,6 +1,6 @@
 # Risk and confidence scoring
 
-SentinelForge creates assessments for contextual findings and temporal incidents. The legacy investigation triage score remains in its existing report field. Security Intelligence projects canonical events, custody verification, graph proof, detection context and curated inventory into observations. The weighted engine accepts provider-neutral factors and can be reused with a different product adapter.
+Riswan IR creates assessments for contextual findings and temporal incidents. The legacy investigation triage score remains in its existing report field. Security Intelligence projects canonical events, custody verification, graph proof, detection context and curated inventory into observations. The weighted engine accepts provider-neutral factors and can be reused with a different product adapter.
 
 ```mermaid
 flowchart LR
@@ -47,7 +47,7 @@ These are initial engineering assumptions. Confidence indicates evidence strengt
 
 An unknown risk score receives P2 for review. A benign analyst disposition records dismissal at P4 while preserving the assessed risk and confidence values. A confirmed disposition records analyst validation independently of evidence integrity. Containment changes priority using residual risk when qualifying evidence is available.
 
-Set `SENTINELFORGE_RISK_POLICY` to a trusted local YAML list containing versioned scoring policies. The newest Security Intelligence policy is selected by numeric version. Each dimension must total 100. Change the version when editing weights or thresholds. `SENTINELFORGE_RISK_INVENTORY` accepts a trusted local JSON document with `asset_criticality`, `identity_privilege`, `resource_exposure`, `business_impact`, `historical_recurrence`, and `rule_reliability` maps. Qualify resource keys with `ACCOUNT/RESOURCE` for scoped estimates. Inventory values and file paths are never accepted in the HTTP request. The archived evaluation stores the resulting factor inputs and exact policy with each assessment.
+Set `RISWAN_IR_RISK_POLICY` to a trusted local YAML list containing versioned scoring policies. The newest Security Intelligence policy is selected by numeric version. Each dimension must total 100. Change the version when editing weights or thresholds. `RISWAN_IR_RISK_INVENTORY` accepts a trusted local JSON document with `asset_criticality`, `identity_privilege`, `resource_exposure`, `business_impact`, `historical_recurrence`, and `rule_reliability` maps. Qualify resource keys with `ACCOUNT/RESOURCE` for scoped estimates. Inventory values and file paths are never accepted in the HTTP request. The archived evaluation stores the resulting factor inputs and exact policy with each assessment.
 
 ## Reassessment and replay
 

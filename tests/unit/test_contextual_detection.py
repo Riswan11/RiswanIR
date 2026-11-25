@@ -3,14 +3,14 @@ from ipaddress import ip_address
 
 import pytest
 
-from sentinelforge.core.fields import utc_timestamp
-from sentinelforge.detection.engine import evaluate, matches
-from sentinelforge.detection.registry import RuleRegistry, default_registry
-from sentinelforge.models.canonical_event import Status
-from sentinelforge.models.detection import DetectionCondition, DetectionContext
-from sentinelforge.normalization.aws.cloudtrail import normalize
-from sentinelforge.normalization.aws.detection_signals import project
-from sentinelforge.normalization.aws.ocsf_mapper import map_event
+from riswan_ir.core.fields import utc_timestamp
+from riswan_ir.detection.engine import evaluate, matches
+from riswan_ir.detection.registry import RuleRegistry, default_registry
+from riswan_ir.models.canonical_event import Status
+from riswan_ir.models.detection import DetectionCondition, DetectionContext
+from riswan_ir.normalization.aws.cloudtrail import normalize
+from riswan_ir.normalization.aws.detection_signals import project
+from riswan_ir.normalization.aws.ocsf_mapper import map_event
 from tests.fixtures.cloudtrail import ROOT, record
 
 ACCOUNT = "111122223333"

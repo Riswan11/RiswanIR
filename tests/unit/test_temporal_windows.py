@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
-from sentinelforge.correlation.temporal.engine import run
-from sentinelforge.correlation.temporal.models import Stage, TemporalPolicy
-from sentinelforge.correlation.temporal.registry import default_rules, select_rules
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.correlation.temporal.engine import run
+from riswan_ir.correlation.temporal.models import Stage, TemporalPolicy
+from riswan_ir.correlation.temporal.registry import default_rules, select_rules
+from riswan_ir.storage.sqlite import Store
 from tests.integration.test_temporal_correlation import (
     BUCKET,
     PREFIX,

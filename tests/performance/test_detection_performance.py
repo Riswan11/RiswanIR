@@ -1,7 +1,7 @@
 from time import perf_counter
 
-from sentinelforge.detection.engine import MAX_EVENTS, evaluate
-from sentinelforge.detection.registry import default_registry
+from riswan_ir.detection.engine import MAX_EVENTS, evaluate
+from riswan_ir.detection.registry import default_registry
 from tests.unit.test_contextual_detection import POLICY, RESOURCE, canonical
 
 

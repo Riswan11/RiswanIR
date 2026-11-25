@@ -1,7 +1,7 @@
-"""Run SentinelForge directly from the source checkout."""
+"""Run Riswan IR directly from the source checkout."""
 
-from src.sentinelforge.__main__ import main
-from src.sentinelforge.api.http import Application
+from src.riswan_ir.__main__ import main
+from src.riswan_ir.api.http import Application
 
 __all__ = ["Application", "main"]
 

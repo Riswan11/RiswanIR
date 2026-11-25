@@ -2,9 +2,9 @@ import json
 import sys
 from datetime import timedelta
 
-from sentinelforge.connectors import cli
-from sentinelforge.models.collection import CollectionResult
-from sentinelforge.models.connector import CollectionError
+from riswan_ir.connectors import cli
+from riswan_ir.models.collection import CollectionResult
+from riswan_ir.models.connector import CollectionError
 
 
 def test_cli_reports_failures_and_status_without_credential_values(
@@ -13,7 +13,7 @@ def test_cli_reports_failures_and_status_without_credential_values(
     config = tmp_path / "config.json"
     config.write_text(json.dumps([aws_config.model_dump(mode="json")]))
     args = [
-        "sentinelforge-collect",
+        "riswan_ir-collect",
         "--config",
         str(config),
         "--db",
@@ -48,7 +48,7 @@ def test_cli_backfill_keeps_incremental_checkpoint_separate(
     config = tmp_path / "config.json"
     config.write_text(json.dumps([aws_config.model_dump(mode="json")]))
     args = [
-        "sentinelforge-collect",
+        "riswan_ir-collect",
         "--config",
         str(config),
         "--db",

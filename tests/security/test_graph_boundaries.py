@@ -2,7 +2,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from sentinelforge.knowledge_graph.ontology import Entity
+from riswan_ir.knowledge_graph.ontology import Entity
 from tests.fixtures.cloudtrail import ROOT, record
 
 BASE = "/v1/investigations"

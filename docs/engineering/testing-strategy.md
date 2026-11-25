@@ -8,7 +8,7 @@ Run from the repository root.
 
 ```sh
 python -m pip install ".[test]"
-python -m pytest tests/ -v --cov=sentinelforge --cov-report=term-missing --cov-fail-under=90
+python -m pytest tests/ -v --cov=riswan_ir --cov-report=term-missing --cov-fail-under=90
 ```
 
 Overall branch-inclusive coverage must reach 90%. Add focused regression tests for domain or transport behavior changes, and include a compatibility test when a change affects stored reports or REST payloads. [CI strategy](ci-cd-strategy.md)

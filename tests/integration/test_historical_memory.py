@@ -1,14 +1,14 @@
 import json
 from urllib.parse import urlencode
 
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.storage.sqlite import Store
 from tests.integration.test_risk_assessment import BASE, assessment, restoration, submit
 from tests.integration.test_temporal_correlation import ACCOUNT, DESTINATION, ROOT, scenario
 
 
 def clock(monkeypatch, day):
     instant = f"2025-01-{day:02d}T04:00:00+00:00"
-    monkeypatch.setattr("sentinelforge.storage.sqlite.now", lambda: instant)
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: instant)
     return instant
 
 
@@ -121,7 +121,7 @@ def test_expiration_enforces_category_retention(client, store, monkeypatch, tmp_
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("SENTINELFORGE_MEMORY_POLICY", str(config))
+    monkeypatch.setenv("RISWAN_IR_MEMORY_POLICY", str(config))
     clock(monkeypatch, 1)
     older = submit(client, records(1, "older"))
     review(client, older)
@@ -218,7 +218,7 @@ def test_explicit_cross_account_policy_and_revocation(client, monkeypatch, tmp_p
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("SENTINELFORGE_MEMORY_POLICY", str(policy))
+    monkeypatch.setenv("RISWAN_IR_MEMORY_POLICY", str(policy))
     shared = submit(client, records(2, "authorized"))
     assert memory(client, shared)["similar_investigations"][0]["investigation_id"] == foreign["id"]
     restricted = json.loads(policy.read_text(encoding="utf-8"))
@@ -226,5 +226,5 @@ def test_explicit_cross_account_policy_and_revocation(client, monkeypatch, tmp_p
     policy.write_text(json.dumps(restricted), encoding="utf-8")
     assert memory(client, shared)["similar_investigations"] == []
     assert client("GET", f"{BASE}/{shared['id']}")[1]["similar_investigations"] == []
-    monkeypatch.delenv("SENTINELFORGE_MEMORY_POLICY")
+    monkeypatch.delenv("RISWAN_IR_MEMORY_POLICY")
     assert memory(client, shared)["similar_investigations"] == []
