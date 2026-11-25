@@ -1,9 +1,9 @@
 import copy
 
-from sentinelforge.correlation.aws import AWSIdentityResolver
-from sentinelforge.investigation.correlation import correlate_with_context
-from sentinelforge.models.identity import CloudIdentity
 from tests.integration.test_identity_correlation import ACTOR, ROLE, chain
+from trailhound.correlation.aws import AWSIdentityResolver
+from trailhound.investigation.correlation import correlate_with_context
+from trailhound.models.identity import CloudIdentity
 
 
 def test_identity_resolution_scopes_principal_ids_to_account_and_partition():

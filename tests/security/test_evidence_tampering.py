@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from sentinelforge.evidence.integrity import canonical_json, sha256
+from trailhound.evidence.integrity import canonical_json, sha256
 
 
 @pytest.mark.parametrize("target", ["raw", "normalized", "custody", "provenance", "missing"])

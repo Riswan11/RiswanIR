@@ -1,6 +1,6 @@
 import pytest
 
-from sentinelforge.normalization.cloudtrail import normalize, normalize_batch
+from trailhound.normalization.cloudtrail import normalize, normalize_batch
 
 
 @pytest.mark.parametrize(

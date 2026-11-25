@@ -5,7 +5,7 @@ flowchart LR
     AWS["AWS CloudTrail"] -->|"Operator obtains export"| Analyst["Local analyst"]
     Analyst --> Browser["Browser or API client"]
     subgraph Host["Operator workstation"]
-        Browser -->|"Loopback HTTP"| App["SentinelForge process"]
+        Browser -->|"Loopback HTTP"| App["TrailHound process"]
         App <--> DB[("Local SQLite")]
         Collector["Optional local AWS collector"] --> DB
     end

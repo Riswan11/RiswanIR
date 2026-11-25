@@ -19,7 +19,7 @@ from ..storage import checkpoint_store
 from ..storage.sqlite import Store
 from .pipeline import persist
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("trailhound.ingestion.orchestrator")
 
 
 def next_window(store: Store, config: ConnectorConfig, now: datetime) -> CollectionRequest | None:

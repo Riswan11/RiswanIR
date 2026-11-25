@@ -6,7 +6,7 @@ Accepted. This record documents the existing implementation.
 
 ## Context
 
-SentinelForge needs a portable local runtime and a practical ecosystem for security data processing.
+TrailHound needs a portable local runtime and a practical ecosystem for security data processing.
 
 ## Decision
 

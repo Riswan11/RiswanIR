@@ -1,7 +1,7 @@
 import pytest
 
-from sentinelforge.investigation.correlation import correlate
-from sentinelforge.normalization.cloudtrail import issued_credential, normalize
+from trailhound.investigation.correlation import correlate
+from trailhound.normalization.cloudtrail import issued_credential, normalize
 
 
 def test_normalized_fields_and_deduplication(investigation_request):

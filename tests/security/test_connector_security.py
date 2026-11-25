@@ -5,11 +5,11 @@ from botocore.exceptions import EndpointConnectionError
 from botocore.stub import Stubber
 from pydantic import ValidationError
 
-from sentinelforge.connectors.aws.authentication import log_prefix, session_policy
-from sentinelforge.connectors.aws.requests import RequestBudget
-from sentinelforge.connectors.base import CollectionFailure
-from sentinelforge.models.collection import CollectionRequest
-from sentinelforge.models.connector import ConnectorConfig
+from trailhound.connectors.aws.authentication import log_prefix, session_policy
+from trailhound.connectors.aws.requests import RequestBudget
+from trailhound.connectors.base import CollectionFailure
+from trailhound.models.collection import CollectionRequest
+from trailhound.models.connector import ConnectorConfig
 
 
 @pytest.mark.parametrize(

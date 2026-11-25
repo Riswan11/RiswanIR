@@ -1,1 +1,1 @@
-"""SentinelForge tests."""
+"""TrailHound tests."""

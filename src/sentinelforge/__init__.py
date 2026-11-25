@@ -1,1 +1,1 @@
-"""Local CloudTrail investigation workspace."""
+"""Legacy module launcher for TrailHound."""

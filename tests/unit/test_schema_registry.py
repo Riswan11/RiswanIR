@@ -1,10 +1,10 @@
 import pytest
 
-from sentinelforge.models.canonical_event import CanonicalModel
-from sentinelforge.models.schema import SchemaExtension, SchemaMapping
-from sentinelforge.normalization.aws.cloudtrail import normalize
-from sentinelforge.normalization.aws.ocsf_mapper import REGISTRY, map_event
-from sentinelforge.schema.registry import OCSF, SchemaRegistry
+from trailhound.models.canonical_event import CanonicalModel
+from trailhound.models.schema import SchemaExtension, SchemaMapping
+from trailhound.normalization.aws.cloudtrail import normalize
+from trailhound.normalization.aws.ocsf_mapper import REGISTRY, map_event
+from trailhound.schema.registry import OCSF, SchemaRegistry
 
 
 class ExampleExtension(CanonicalModel):

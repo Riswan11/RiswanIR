@@ -55,7 +55,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: codeql-sarif
+          name: trailhound-codeql-sarif
           path: sarif/
           retention-days: 14
           if-no-files-found: error
@@ -75,7 +75,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: codeql-sarif
+          name: trailhound-codeql-sarif
           path: ${{ runner.temp }}/codeql-sarif
       - uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:

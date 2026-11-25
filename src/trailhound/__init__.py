@@ -1,0 +1,1 @@
+"""Local CloudTrail investigation workspace."""

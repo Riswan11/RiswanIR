@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sentinelforge"
+name = "trailhound"
 version = "0.1.0"
-description = "Local CloudTrail investigation workspace"
+description = "TrailHound, an evidence-backed CloudTrail investigation workspace"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.11,<3", "boto3>=1.40,<2"]
@@ -20,15 +20,18 @@ quality = ["ruff>=0.11,<1", "mypy>=1.15,<3"]
 security = ["bandit>=1.8,<2", "pip-audit>=2.9,<3"]
 
 [project.scripts]
-sentinelforge = "sentinelforge.__main__:main"
-sentinelforge-evidence = "sentinelforge.evidence.cli:main"
-sentinelforge-collect = "sentinelforge.connectors.cli:main"
+trailhound = "trailhound.__main__:main"
+trailhound-evidence = "trailhound.evidence.cli:main"
+trailhound-collect = "trailhound.connectors.cli:main"
+sentinelforge = "trailhound.__main__:main"
+sentinelforge-evidence = "trailhound.evidence.cli:main"
+sentinelforge-collect = "trailhound.connectors.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sentinelforge.frontend" = ["index.html"]
+"trailhound.frontend" = ["index.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -37,7 +40,7 @@ addopts = ["--import-mode=importlib"]
 
 [tool.coverage.run]
 branch = true
-source = ["sentinelforge"]
+source = ["trailhound"]
 
 [tool.coverage.report]
 show_missing = true
@@ -53,7 +56,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/sentinelforge"]
+files = ["src/trailhound"]
 plugins = ["pydantic.mypy"]
 check_untyped_defs = true
 warn_unused_ignores = true

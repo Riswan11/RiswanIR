@@ -19,7 +19,7 @@ from ..models import (
 from ..schema.projection import export_events
 from ..security.host import is_local_host
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("trailhound.api.http")
 
 
 class Application:
@@ -33,7 +33,7 @@ class Application:
             if not is_local_host(env.get("HTTP_HOST", "")):
                 status, result = (
                     400,
-                    {"error": "Use localhost or 127.0.0.1 to access SentinelForge."},
+                    {"error": "Use localhost or 127.0.0.1 to access TrailHound."},
                 )
             elif env["PATH_INFO"] == "/" and env["REQUEST_METHOD"] == "GET":
                 result = files(frontend).joinpath("index.html").read_bytes()

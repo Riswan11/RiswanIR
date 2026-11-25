@@ -43,7 +43,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/runtime-env"
           "$RUNNER_TEMP/runtime-env/bin/python" -m pip install .
           "$RUNNER_TEMP/runtime-env/bin/python" -m pip list --format=freeze \
-            --exclude sentinelforge --exclude pip --exclude setuptools \
+            --exclude trailhound --exclude pip --exclude setuptools \
             > "$RUNNER_TEMP/runtime-manifest/requirements.txt"
           cp "$RUNNER_TEMP/runtime-manifest/requirements.txt" reports/runtime-requirements.txt
       - name: Audit runtime dependencies with pip-audit
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: security-scan-reports
+          name: trailhound-security-scan-reports
           path: reports/
           retention-days: 14
           if-no-files-found: error

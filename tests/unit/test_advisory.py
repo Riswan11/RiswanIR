@@ -1,5 +1,5 @@
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.response.advisory import recommend
+from trailhound.investigation.analysis import analyze
+from trailhound.response.advisory import recommend
 
 
 def test_advisory_uses_only_access_key_creation_evidence(investigation_request):

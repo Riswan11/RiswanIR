@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.stub import Stubber
 
-from sentinelforge.connectors.aws import authentication as aws
-from sentinelforge.connectors.aws.requests import RequestBudget
-from sentinelforge.connectors.base import CollectionFailure
-from sentinelforge.models.connector import ConnectorConfig
+from trailhound.connectors.aws import authentication as aws
+from trailhound.connectors.aws.requests import RequestBudget
+from trailhound.connectors.base import CollectionFailure
+from trailhound.models.connector import ConnectorConfig
 
 
 def test_cross_account_assumption_with_restricted_policy(aws_config, fake_aws_session, monkeypatch):

@@ -1,5 +1,5 @@
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.models import InvestigationRequest
+from trailhound.investigation.analysis import analyze
+from trailhound.models import InvestigationRequest
 
 ROOT = "arn:aws:iam::777788889999:user/John"
 SESSION = "arn:aws:sts::111122223333:assumed-role/Developer_Role/Session_Name"

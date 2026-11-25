@@ -1,7 +1,7 @@
-"""Run SentinelForge directly from the source checkout."""
+"""Run TrailHound directly from the source checkout."""
 
-from src.sentinelforge.__main__ import main
-from src.sentinelforge.api.http import Application
+from src.trailhound.__main__ import main
+from src.trailhound.api.http import Application
 
 __all__ = ["Application", "main"]
 

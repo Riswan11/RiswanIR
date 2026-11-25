@@ -1,6 +1,6 @@
 import pytest
 
-from sentinelforge import __main__
+from trailhound import __main__
 
 BASE = "/v1/investigations"
 
@@ -59,8 +59,8 @@ def test_cli_uses_loopback_and_configured_database(monkeypatch, tmp_path, capsys
     from unittest.mock import MagicMock
 
     db = tmp_path / "cli.sqlite3"
-    monkeypatch.setenv("SENTINELFORGE_DB", str(db))
-    monkeypatch.setenv("SENTINELFORGE_PORT", "8456")
+    monkeypatch.setenv("TRAILHOUND_DB", str(db))
+    monkeypatch.setenv("TRAILHOUND_PORT", "8456")
     server = MagicMock()
     make_server = MagicMock(return_value=server)
     monkeypatch.setattr(__main__, "make_server", make_server)

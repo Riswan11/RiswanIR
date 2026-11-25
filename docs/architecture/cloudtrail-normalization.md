@@ -1,6 +1,6 @@
 # CloudTrail normalization
 
-SentinelForge accepts individual events, plain arrays, CloudTrail log exports with a `Records` array, and lookup exports with an `Events` array. The AWS normalizer is separate from detection. AWS-shaped event sources can represent previously unseen services and operations.
+TrailHound accepts individual events, plain arrays, CloudTrail log exports with a `Records` array, and lookup exports with an `Events` array. The AWS normalizer is separate from detection. AWS-shaped event sources can represent previously unseen services and operations.
 
 - Event IDs, timestamps and operation names are required. Missing source, version and category remain compatible with older exports. Supplied sources and versions must have valid syntax. Supported CloudTrail categories are Management, Data, NetworkActivity and Insight. Insights can have no caller or ordinary API outcome.
 - Normalized evidence records UTC time, AWS service and category, identity and session metadata, outcome, network and TLS data, resources, and request and shared event IDs when available.

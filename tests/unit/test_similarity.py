@@ -1,6 +1,6 @@
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.memory.similarity import similar_investigations
-from sentinelforge.models import Disposition, InvestigationReport
+from trailhound.investigation.analysis import analyze
+from trailhound.memory.similarity import similar_investigations
+from trailhound.models import Disposition, InvestigationReport
 
 
 def test_ranks_by_shared_events_limits_results_and_ignores_zero_overlap(investigation_request):

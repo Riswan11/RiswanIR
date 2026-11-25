@@ -3,9 +3,9 @@ import sqlite3
 
 import pytest
 
-from sentinelforge.core.errors import NotFoundError
-from sentinelforge.models import ActionDecision, AnalystFeedback
-from sentinelforge.storage.sqlite import Store
+from trailhound.core.errors import NotFoundError
+from trailhound.models import ActionDecision, AnalystFeedback
+from trailhound.storage.sqlite import Store
 
 
 def test_persists_and_reopens_reports_reviews_and_decisions(store, investigation_request):

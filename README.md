@@ -1,6 +1,6 @@
-# SentinelForge
+# TrailHound
 
-SentinelForge is a local analyst workspace for investigating suspicious AWS activity from supplied CloudTrail records. It links triage findings to evidence, reconstructs a timeline, and preserves analyst decisions for future investigations.
+TrailHound is a local analyst workspace for investigating suspicious AWS activity from supplied CloudTrail records. It links triage findings to evidence, reconstructs a timeline, and preserves analyst decisions for future investigations.
 
 ## Run locally
 
@@ -15,17 +15,26 @@ Open [the analyst workspace](http://127.0.0.1:8000). Select **Load sample**, the
 
 For your own data, paste a single CloudTrail event, a log with a top-level `Records` array, a `lookup-events` export with an `Events` array, or a plain array of records. Supply a starting ARN from `userIdentity.arn`. The API accepts an object with `title`, `principal`, and `records` at `POST /v1/investigations`. Store real exports outside the repository or in the ignored `local-data/` directory.
 
-The local SQLite database defaults to `sentinelforge.sqlite3`. Set `SENTINELFORGE_DB` to choose a different file or `SENTINELFORGE_PORT` to change the port.
+New workspaces default to `trailhound.sqlite3`. If `sentinelforge.sqlite3` already exists in the
+working directory, TrailHound opens it in place. Set `TRAILHOUND_DB` to choose a database or
+`TRAILHOUND_PORT` to change the port. The corresponding `SENTINELFORGE_*` variables remain
+fallback aliases. The three legacy console commands and `python -m sentinelforge` still work.
+Update Python imports to `trailhound`.
+
+Existing investigations, evidence IDs, hashes, rule IDs, and connector checkpoints carry
+forward without a database migration. Forensic exports retain the `sentinelforge-evidence-v1`
+format label, OCSF exports retain the `unmapped.sentinelforge` extension key, and the AWS
+collector retains the `SentinelForgeTelemetry` STS session name for existing IAM policies.
 
 New investigations retain CloudTrail record values in local SQLite after redacting recognized credential secrets. Raw telemetry can contain other sensitive data. Keep the database, backups, and forensic exports under restricted workstation access. See [evidence custody, verification, and retention](docs/architecture/evidence-custody.md) for local commands.
 
-For account-scoped CloudTrail Event History or S3 collection, use the local `sentinelforge-collect` CLI. See [AWS collection configuration and IAM guidance](docs/architecture/aws-collection.md).
+For account-scoped CloudTrail Event History or S3 collection, use the local `trailhound-collect` CLI. See [AWS collection configuration and IAM guidance](docs/architecture/aws-collection.md).
 
 Investigation reports include [identity and session correlation](docs/architecture/identity-correlation.md), with confidence, supporting evidence and a revision endpoint for late telemetry.
 
 New investigations include [OCSF-aligned events](docs/schema/overview.md). Export them with `GET /v1/investigations/{id}/events`.
 
-After installation, you can also start the app with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
+After installation, you can also start the app with `trailhound` or `python -m trailhound`. See the [architecture guide](docs/architecture/README.md) for the package layout.
 
 ## Investigation workflow
 
@@ -61,7 +70,7 @@ Install the test dependencies and run the full suite with branch coverage.
 
 ```sh
 python -m pip install ".[test]"
-python -m pytest tests/ -v --cov=sentinelforge --cov-report=term-missing --cov-fail-under=90
+python -m pytest tests/ -v --cov=trailhound --cov-report=term-missing --cov-fail-under=90
 ```
 
 Run a single layer with `python -m pytest tests/unit`, `python -m pytest tests/integration`, or `python -m pytest tests/security`. Tests use synthetic CloudTrail events and temporary SQLite databases. The suite runs without AWS credentials or network access after installation.

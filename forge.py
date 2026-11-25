@@ -1,9 +1,9 @@
 """Compatibility imports for scripts run from the source checkout."""
 
-from src.sentinelforge.core.errors import NotFoundError
-from src.sentinelforge.investigation.analysis import analyze as analyze_request
-from src.sentinelforge.models import InvestigationRequest
-from src.sentinelforge.storage.sqlite import Store
+from src.trailhound.core.errors import NotFoundError
+from src.trailhound.investigation.analysis import analyze as analyze_request
+from src.trailhound.models import InvestigationRequest
+from src.trailhound.storage.sqlite import Store
 
 __all__ = ["NotFoundError", "Store", "analyze"]
 

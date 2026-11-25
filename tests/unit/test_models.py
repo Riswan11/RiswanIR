@@ -4,8 +4,8 @@ import unittest
 
 from pydantic import ValidationError
 
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.models import (
+from trailhound.investigation.analysis import analyze
+from trailhound.models import (
     ActionDecision,
     AnalystFeedback,
     Evidence,

@@ -1,7 +1,7 @@
 from datetime import timedelta
 
-from sentinelforge.models.connector import CollectionCheckpoint
-from sentinelforge.storage.checkpoint_store import checkpoint, save_checkpoint
+from trailhound.models.connector import CollectionCheckpoint
+from trailhound.storage.checkpoint_store import checkpoint, save_checkpoint
 
 
 def test_checkpoints_are_monotonic_and_partitioned(store, aws_config, aws_window):

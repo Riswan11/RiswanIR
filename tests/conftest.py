@@ -8,11 +8,11 @@ from wsgiref.validate import validator
 
 import pytest
 
-from sentinelforge.api.http import Application
-from sentinelforge.models import InvestigationRequest
-from sentinelforge.models.collection import CollectionRequest
-from sentinelforge.models.connector import ConnectorConfig
-from sentinelforge.storage.sqlite import Store
+from trailhound.api.http import Application
+from trailhound.models import InvestigationRequest
+from trailhound.models.collection import CollectionRequest
+from trailhound.models.connector import ConnectorConfig
+from trailhound.storage.sqlite import Store
 
 
 @pytest.fixture
@@ -66,9 +66,9 @@ def fake_aws_session():
 def deterministic_metadata(monkeypatch):
     when = "2025-01-01T04:00:00+00:00"
     ids = iter(range(1, 1000))
-    monkeypatch.setattr("sentinelforge.storage.sqlite.uuid4", lambda: uuid.UUID(int=next(ids)))
-    monkeypatch.setattr("sentinelforge.storage.sqlite.now", lambda: when)
-    monkeypatch.setattr("sentinelforge.api.http.now", lambda: when)
+    monkeypatch.setattr("trailhound.storage.sqlite.uuid4", lambda: uuid.UUID(int=next(ids)))
+    monkeypatch.setattr("trailhound.storage.sqlite.now", lambda: when)
+    monkeypatch.setattr("trailhound.api.http.now", lambda: when)
 
 
 @pytest.fixture

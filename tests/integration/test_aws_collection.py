@@ -7,10 +7,10 @@ import pytest
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from sentinelforge.connectors import registry
-from sentinelforge.connectors.aws.authentication import log_prefix
-from sentinelforge.evidence.redaction import redact_record
-from sentinelforge.ingestion.orchestrator import run_collection
+from trailhound.connectors import registry
+from trailhound.connectors.aws.authentication import log_prefix
+from trailhound.evidence.redaction import redact_record
+from trailhound.ingestion.orchestrator import run_collection
 
 
 def test_moto_s3_collection_reaches_custody(store, s3_config, aws_window, cloudtrail, monkeypatch):

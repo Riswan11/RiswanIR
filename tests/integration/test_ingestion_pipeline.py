@@ -1,8 +1,8 @@
 from datetime import timedelta
 
-from sentinelforge.connectors.base import CollectedBatch, CollectionFailure
-from sentinelforge.ingestion.orchestrator import next_window, run_collection
-from sentinelforge.storage import checkpoint_store
+from trailhound.connectors.base import CollectedBatch, CollectionFailure
+from trailhound.ingestion.orchestrator import next_window, run_collection
+from trailhound.storage import checkpoint_store
 
 
 class Source:

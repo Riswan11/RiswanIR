@@ -26,12 +26,12 @@ jobs:
           python -m pip install --target "$RUNNER_TEMP/runtime-packages" .
           bash .github/scripts/install-scanner.sh syft
           "$RUNNER_TEMP/scanners/syft" scan "dir:$RUNNER_TEMP/runtime-packages" \
-            --source-name SentinelForge --source-version "$GITHUB_SHA" \
-            -o cyclonedx-json=sentinelforge.cdx.json
-          python -c "import json; from pathlib import Path; data = json.loads(Path('sentinelforge.cdx.json').read_text()); assert {'pydantic', 'sentinelforge'} <= {component['name'].lower() for component in data['components']}"
+            --source-name TrailHound --source-version "$GITHUB_SHA" \
+            -o cyclonedx-json=trailhound.cdx.json
+          python -c "import json; from pathlib import Path; data = json.loads(Path('trailhound.cdx.json').read_text()); assert {'pydantic', 'trailhound'} <= {component['name'].lower() for component in data['components']}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sentinelforge-sbom
-          path: sentinelforge.cdx.json
+          name: trailhound-sbom
+          path: trailhound.cdx.json
           retention-days: 30
           if-no-files-found: error
