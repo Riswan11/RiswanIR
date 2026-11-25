@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Local CloudTrail investigation workspace"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.11,<3", "boto3>=1.40,<2"]
+dependencies = ["pydantic>=2.11,<3", "boto3>=1.40,<2", "PyYAML>=6.0.2,<7"]
 
 [project.optional-dependencies]
 test = [
@@ -23,12 +23,14 @@ security = ["bandit>=1.8,<2", "pip-audit>=2.9,<3"]
 sentinelforge = "sentinelforge.__main__:main"
 sentinelforge-evidence = "sentinelforge.evidence.cli:main"
 sentinelforge-collect = "sentinelforge.connectors.cli:main"
+sentinelforge-detect = "sentinelforge.detection.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 "sentinelforge.frontend" = ["index.html"]
+"sentinelforge.detection" = ["aws-rules.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -59,5 +61,5 @@ check_untyped_defs = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*"]
+module = ["boto3.*", "botocore.*", "yaml.*"]
 ignore_missing_imports = true

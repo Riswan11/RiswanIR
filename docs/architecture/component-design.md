@@ -23,3 +23,12 @@ The [entry point](../../src/sentinelforge/__main__.py) constructs the SQLite sto
 Investigation code operates without HTTP or SQLite. Storage invokes analysis on case creation and calls memory during report hydration. Graph edges and risk assessments are projections of evidence. The collection orchestrator receives connector batches and uses the ingestion pipeline to persist evidence and progress. A future planner would orchestrate existing functions through a separately reviewed tool boundary.
 
 [Component diagram](diagrams/components.md)
+
+## Context-aware detection
+
+The investigation service projects correlated evidence into canonical events and delegates
+context enrichment, condition evaluation, thresholds, and suppression to the detection module.
+The storage layer supplies trusted policy and a rule registry, then archives the resolved
+configuration alongside the report. Raw request details remain with evidence custody. The
+canonical extension carries selected typed results rather than copying policy documents.
+See [detection architecture](../detection/overview.md).

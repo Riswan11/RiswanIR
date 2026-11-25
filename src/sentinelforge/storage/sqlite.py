@@ -4,12 +4,15 @@ import os
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from ..core.errors import NotFoundError
 from ..core.fields import now, utc_timestamp
+from ..detection.engine import evaluate
+from ..detection.registry import RuleRegistry, default_registry
 from ..evidence.redaction import redact_record
 from ..investigation.analysis import analyze
 from ..memory.similarity import similar_investigations
@@ -24,12 +27,18 @@ from ..models import (
     InvestigationSummary,
 )
 from ..models.chain_of_custody import EvidenceIntegrity, EvidenceRetentionPolicy
+from ..models.detection import DetectionContext, DetectionReplayResult, DetectionRule
 from ..models.provenance import EvidenceProvenance
+from ..normalization.aws.ocsf_mapper import map_event
 from . import checkpoint_store, evidence_store
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS investigations (
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, report TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS detection_configuration (
+    investigation_id TEXT PRIMARY KEY REFERENCES investigations(id),
+    context TEXT NOT NULL, rules TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY, investigation_id TEXT NOT NULL REFERENCES investigations(id),
@@ -50,9 +59,30 @@ def deserialize_report(payload: str) -> InvestigationReport:
         raise RuntimeError("Invalid stored investigation report.") from exc
 
 
+RULE_LIST = TypeAdapter(list[DetectionRule])
+
+
 class Store:
-    def __init__(self, path):
+    def __init__(
+        self,
+        path,
+        *,
+        detection_context: DetectionContext | None = None,
+        detection_registry: RuleRegistry | None = None,
+    ):
         self.path = path
+        policy = os.getenv("SENTINELFORGE_DETECTION_CONTEXT")
+        registry = os.getenv("SENTINELFORGE_DETECTION_RULES")
+        if detection_context is None and policy:
+            with Path(policy).open("rb") as source:
+                data = source.read(1_000_001)
+            if len(data) > 1_000_000:
+                raise ValueError("Detection context file is too large.")
+            detection_context = DetectionContext.model_validate_json(data)
+        self.detection_context = detection_context or DetectionContext()
+        self.detection_registry = detection_registry or (
+            RuleRegistry.from_file(Path(registry)) if registry else default_registry()
+        )
         # Existing databases keep their operating-system permissions.
         if os.name == "posix":
             try:
@@ -88,7 +118,16 @@ class Store:
         case_id, timestamp = uuid4().hex, now()
         db.execute("INSERT INTO investigations VALUES (?, ?, ?)", (case_id, timestamp, "{}"))
         origins = evidence_store.ingest(db, case_id, request, timestamp, inherited)
-        result = analyze(request)
+        rules = self.detection_registry.select()
+        result = analyze(request, rules=rules, context=self.detection_context)
+        db.execute(
+            "INSERT INTO detection_configuration VALUES (?, ?, ?)",
+            (
+                case_id,
+                self.detection_context.model_dump_json(),
+                RULE_LIST.dump_json(rules).decode(),
+            ),
+        )
         evidence_store.record_transformations(db, case_id, request, timestamp, result, origins)
         report = InvestigationReport(id=case_id, created_at=timestamp, **dict(result))
         if previous:
@@ -101,6 +140,62 @@ class Store:
             (report.model_dump_json(by_alias=True, exclude_unset=True), case_id),
         )
         return case_id
+
+    def replay_detection(
+        self,
+        case_id: str,
+        *,
+        versions: dict[str, str] | None = None,
+        registry: RuleRegistry | None = None,
+    ) -> DetectionReplayResult:
+        with self.connect() as db:
+            db.execute("BEGIN")
+            row = db.execute(
+                "SELECT report FROM investigations WHERE id = ?", (case_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("Investigation not found.")
+            report = deserialize_report(row["report"])
+            if not evidence_store.verify(db, case_id, report).valid:
+                raise ValueError("Detection replay requires verified investigation evidence.")
+            archived = db.execute(
+                "SELECT context, rules FROM detection_configuration WHERE investigation_id = ?",
+                (case_id,),
+            ).fetchone()
+        if archived:
+            context = DetectionContext.model_validate_json(archived["context"])
+            rules = RULE_LIST.validate_json(archived["rules"])
+        elif report.detection:
+            raise ValueError("Archived detection configuration is missing.")
+        else:
+            context, rules = DetectionContext(), self.detection_registry.select()
+        events = report.canonical_events
+        if events is None:
+            events = [
+                map_event(item, evidence=item.reference, parent=item.linked_from_evidence_id)
+                for item in report.evidence
+            ]
+        if report.detection:
+            baseline = evaluate(events, rules, context).result
+            if (
+                baseline.execution.configuration_digest
+                != report.detection.execution.configuration_digest
+            ):
+                raise ValueError("Archived detection configuration failed integrity verification.")
+            if versions is None and registry is None:
+                if baseline != report.detection:
+                    raise ValueError("Archived detection cannot be reproduced with this engine.")
+                return baseline
+        if registry is not None:
+            rules = registry.select(versions)
+        elif versions is not None:
+            archive = RuleRegistry(rules)
+            historical = {
+                key: version for key, version in versions.items() if archive.contains(key, version)
+            }
+            current = {key: version for key, version in versions.items() if key not in historical}
+            rules = archive.select(historical) + self.detection_registry.select(current)
+        return evaluate(events, rules, context).result
 
     def revise(self, case_id: str, supplement: EvidenceSubmission) -> InvestigationReport:
         if not supplement.records:

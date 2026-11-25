@@ -13,3 +13,5 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0009 Read-only AWS collection](0009-aws-read-only-collection.md)
 - [0010 Evidence-backed identity and session correlation](0010-identity-session-correlation.md)
 - [0011 OCSF-aligned canonical events](0011-ocsf-aligned-events.md)
+
+- [0012. Evaluate versioned rules over canonical events](0012-context-aware-detection.md)

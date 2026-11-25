@@ -2,6 +2,8 @@
 
 SentinelForge is a local analyst workspace for investigating suspicious AWS activity from supplied CloudTrail records. It links triage findings to evidence, reconstructs a timeline, and preserves analyst decisions for future investigations.
 
+
+Context-aware detection evaluates 20 AWS rules over correlated evidence. See the [detection guide](docs/detection/overview.md) for local inventory and replay.
 ## Run locally
 
 Requires Python 3.11 or newer. From the repository root, run:

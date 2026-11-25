@@ -89,6 +89,19 @@ function render(report) {
   add(panel, "h3", `${risk.severity.toUpperCase()} · ${risk.score}/${risk.score_max} triage score`);
   list(panel, "Evidence-backed findings", risk.claims.map(claim =>
     `${claim.summary} [${claim.evidence_ids.join(", ")}]${claim.possible_attack_technique ? " · Possible " + claim.possible_attack_technique : ""}`));
+  if (report.detection?.findings.length) {
+    add(panel, "h3", "Context-aware findings");
+    for (const finding of report.detection.findings) {
+      const details = add(panel, "details", "");
+      add(details, "summary", `${finding.severity.toUpperCase()} · ${finding.summary}`);
+      add(details, "p", `${finding.id} v${finding.version} · Evidence ${finding.evidence_ids.join(", ")}`);
+      list(details, "Matched conditions", finding.reasons.map(reason =>
+        `${reason.field} ${reason.operator.replaceAll("_", " ")} ${reason.value ?? ""}`.trim()));
+      if (finding.threshold) add(details, "p", `Matched at least ${finding.threshold.minimum} events within ${finding.threshold.window_minutes} minutes.`);
+      if (finding.mitre) add(details, "p", `ATT&CK ${finding.mitre.techniques.join(", ")}`);
+      add(details, "p", finding.recommendation);
+    }
+  }
   add(panel, "h3", "Timeline");
   if (!report.evidence.length) add(panel, "p", "No matching events.");
   const timeline = add(panel, "ol", "");
