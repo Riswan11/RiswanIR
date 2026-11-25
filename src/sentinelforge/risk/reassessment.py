@@ -5,6 +5,7 @@ import sqlite3
 from ..core.errors import NotFoundError
 from ..correlation.temporal.models import TemporalResult
 from ..knowledge_graph.models import SecurityGraph
+from ..memory.models import Intelligence
 from ..models import Disposition, InvestigationReport
 from ..models.detection import DetectionContext
 from ..storage import evidence_store
@@ -26,6 +27,7 @@ def score_case(
     *,
     disposition: Disposition | None = None,
     request: Reassessment | None = None,
+    historical: Intelligence | None = None,
 ) -> Assessment | None:
     candidates = [
         subject
@@ -46,6 +48,7 @@ def score_case(
         configuration,
         evidence_store.verify(db, report.id, report),
         evidence_store.receipts(db, report.id),
+        historical,
     )
     current = repository.latest(db, report.id)
     prior = (

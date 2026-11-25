@@ -12,6 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from ..core.errors import NotFoundError
 from ..core.fields import now, utc_timestamp
+from ..correlation.aws import arn_account, partition
 from ..correlation.temporal import repository as temporal_repository
 from ..correlation.temporal.engine import run as correlate_temporal
 from ..correlation.temporal.models import TemporalPolicy, TemporalResult, TemporalSnapshot
@@ -25,6 +26,15 @@ from ..knowledge_graph.models import SecurityGraph
 from ..knowledge_graph.ontology import Entity
 from ..knowledge_graph.repository import SCHEMA as GRAPH_SCHEMA
 from ..knowledge_graph.repository import SQLiteGraphRepository
+from ..memory import repository as memory_repository
+from ..memory.features import scope as memory_scope
+from ..memory.ingestion import capture_review, promote
+from ..memory.ingestion import index as index_memory
+from ..memory.intelligence import retrieve as retrieve_memory
+from ..memory.models import Feedback as MemoryFeedback
+from ..memory.models import Intelligence, MemoryPolicy
+from ..memory.policy import allowed as allowed_accounts
+from ..memory.policy import policy as memory_policy
 from ..memory.similarity import similar_investigations
 from ..models import (
     ActionDecision,
@@ -112,6 +122,7 @@ class Store:
                 + GRAPH_SCHEMA
                 + temporal_repository.SCHEMA
                 + risk_repository.SCHEMA
+                + memory_repository.SCHEMA
             )
 
     @contextmanager
@@ -189,6 +200,11 @@ class Store:
         temporal_repository.save(
             db, TemporalSnapshot(result=result_, rules=temporal_rules, policy=policy)
         )
+        config = memory_policy()
+        profile = index_memory(
+            db, report, graph, result_, self.detection_context, config, timestamp
+        )
+        historical = retrieve_memory(db, profile, config, timestamp, timestamp, log=False)
         score_case(
             db,
             report,
@@ -197,8 +213,76 @@ class Store:
             self.detection_context,
             timestamp,
             "revision" if previous else "initial",
+            historical=historical,
         )
         return case_id
+
+    @staticmethod
+    def _stored_case(db: sqlite3.Connection, case_id: str) -> InvestigationReport:
+        row = db.execute("SELECT report FROM investigations WHERE id = ?", (case_id,)).fetchone()
+        if row is None:
+            raise NotFoundError("Investigation not found.")
+        return deserialize_report(row["report"])
+
+    def _index_memory_case(
+        self,
+        db: sqlite3.Connection,
+        case_id: str,
+        config: MemoryPolicy,
+        timestamp: str,
+    ) -> bool:
+        report = self._stored_case(db, case_id)
+        snapshot = temporal_repository.load(db, case_id)
+        index_memory(
+            db,
+            report,
+            build_security_graph(report),
+            snapshot.result if snapshot else None,
+            self.detection_context,
+            config,
+            timestamp,
+        )
+        return memory_repository.read(db, case_id, config, timestamp) is not None
+
+    def memory_index(self, case_id: str) -> bool:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return self._index_memory_case(db, case_id, memory_policy(), now())
+
+    def memory_intelligence(self, case_id: str, as_of: str | None = None) -> Intelligence:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._stored_case(db, case_id)
+            timestamp = now()
+            live = memory_policy()
+            config = memory_repository.archived_policy(db, case_id)
+            profile = memory_repository.read(db, case_id, live, timestamp)
+            if profile is None or config is None:
+                raise NotFoundError("Indexed historical profile not found.")
+            return retrieve_memory(
+                db,
+                profile,
+                config,
+                as_of or timestamp,
+                timestamp,
+                authorization=live,
+            )
+
+    def memory_feedback(self, case_id: str, feedback: MemoryFeedback) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            promote(db, self._stored_case(db, case_id), feedback, memory_policy(), now())
+
+    def memory_remove(self, case_id: str) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._stored_case(db, case_id)
+            memory_repository.remove(db, case_id, memory_policy(), now())
+
+    def memory_expire(self) -> int:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return memory_repository.expire(db, memory_policy(), now())
 
     def _score_existing_risk(
         self,
@@ -217,6 +301,22 @@ class Store:
             (case_id,),
         ).fetchone()
         snapshot = temporal_repository.load(db, case_id)
+        live = memory_policy()
+        profile = memory_repository.read(db, case_id, live, timestamp)
+        config = memory_repository.archived_policy(db, case_id)
+        historical = (
+            retrieve_memory(
+                db,
+                profile,
+                config,
+                timestamp,
+                timestamp,
+                log=False,
+                authorization=live,
+            )
+            if profile and config
+            else None
+        )
         return score_case(
             db,
             report,
@@ -227,6 +327,7 @@ class Store:
             trigger,
             disposition=Disposition(latest["disposition"]) if latest else None,
             request=request,
+            historical=historical,
         )
 
     def reassess_risk(self, case_id: str, request: Reassessment) -> Assessment:
@@ -503,22 +604,67 @@ class Store:
                 (investigation_id,),
             ).fetchone()
             report.decision = ActionDecision.model_validate(dict(decision)) if decision else None
+            moment = memory_repository.time_key(now())
             history = db.execute(
                 """
                 SELECT i.report, r.disposition FROM investigations i JOIN reviews r
                     ON r.id = (SELECT max(id) FROM reviews WHERE investigation_id = i.id)
-                WHERE i.id <> ? ORDER BY r.id DESC LIMIT 100
+                WHERE i.id <> ?
+                AND NOT EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.case_id = i.id)
+                AND NOT EXISTS (
+                    SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
+                    WHERE e.investigation_id = i.id AND p.raw_id IS NULL
+                )
+                AND (
+                    NOT EXISTS (SELECT 1 FROM memory_cases m WHERE m.case_id = i.id)
+                    OR (
+                        (SELECT COUNT(*) FROM memory_records m WHERE m.case_id = i.id
+                         AND m.category IN ('episodic', 'semantic') AND m.expires_at > ?) = 2
+                        AND EXISTS (SELECT 1 FROM memory_feedback f
+                                    WHERE f.case_id = i.id AND f.expires_at > ?)
+                    )
+                )
+                ORDER BY r.id DESC LIMIT 100
             """,
-                (investigation_id,),
+                (investigation_id, moment, moment),
             )
+            config = memory_policy()
+            current_scope = self._legacy_memory_scope(report)
+            available = allowed_accounts(current_scope, config)
+            required = {"episodic", "semantic", "feedback"}
+            legacy_shared = required <= config.cross_account_categories
             report.similar_investigations = similar_investigations(
                 report,
                 (
-                    (deserialize_report(item["report"]), Disposition(item["disposition"]))
+                    (prior, Disposition(item["disposition"]))
                     for item in history
+                    if available
+                    and required <= config.enabled_categories
+                    and (
+                        prior_scope := self._legacy_memory_scope(
+                            prior := deserialize_report(item["report"])
+                        )
+                    )
+                    and set(prior_scope) <= available
+                    and (prior_scope == current_scope or legacy_shared)
                 ),
             )
         return report
+
+    @staticmethod
+    def _legacy_memory_scope(report: InvestigationReport) -> list[str]:
+        accounts: set[str] = set()
+        for event in report.evidence:
+            key = arn_account(event.principal)
+            partition_id = partition(event.principal, event.region)
+            actor = memory_scope(key or event.account_id, partition_id)
+            owner = memory_scope(
+                event.recipient_account_id or event.account_id or key, partition_id
+            )
+            if not actor or not owner or (key and event.account_id and key != event.account_id):
+                return []
+            accounts.update((actor, owner))
+        return sorted(accounts)
 
     def list(self) -> list[InvestigationSummary]:
         with self.connect() as db:
@@ -543,6 +689,17 @@ class Store:
                     review.created_at,
                 ),
             )
+            config = memory_policy()
+            prior = memory_repository.read(db, investigation_id, config, review.created_at)
+            if prior is None:
+                self._index_memory_case(db, investigation_id, config, review.created_at)
+            else:
+                stored = self._stored_case(db, investigation_id)
+                verification = evidence_store.verify(db, investigation_id, stored)
+                if verification.valid and not verification.expired_raw:
+                    capture_review(
+                        db, investigation_id, review.disposition, config, review.created_at
+                    )
             self._score_existing_risk(db, investigation_id, review.created_at, "analyst_review")
         return self.get(investigation_id)
 

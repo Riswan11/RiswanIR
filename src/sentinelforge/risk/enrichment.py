@@ -9,6 +9,7 @@ from ..correlation.temporal.models import TemporalResult
 from ..detection.enrichment import enrich
 from ..knowledge_graph.models import SecurityGraph, SecurityRelationship
 from ..knowledge_graph.ontology import Entity, Relation
+from ..memory.models import Intelligence
 from ..models import Disposition, InvestigationReport
 from ..models.canonical_event import SecurityEvent
 from ..models.canonical_event import Status as Outcome
@@ -85,7 +86,9 @@ class Observations:
         inventory: RiskInventory,
         integrity: EvidenceIntegrity,
         receipts: list[EvidenceProvenance],
+        historical: Intelligence | None = None,
     ) -> None:
+        self.historical = historical
         self.context = context
         self.inventory = inventory
         self.integrity = integrity
@@ -242,6 +245,12 @@ class Observations:
         public = any(self.public_grant(event) for event in events)
         configured_exposure = self.resource_setting(self.inventory.resource_exposure, events)
         exposure = 100 if public else configured_exposure
+        recurrence = self.inventory.historical_recurrence.get(subject.rule_id)
+        memory_digest = None
+        if recurrence is None and self.historical:
+            recurrence = self.historical.historical_recurrence.get(subject.rule_id)
+            if recurrence is not None:
+                memory_digest = self.historical.policy_digest
         risk = {
             "threat_impact": factor(
                 THREAT[subject.declared_severity],
@@ -274,8 +283,10 @@ class Observations:
                 refs,
             ),
             "historical_recurrence": factor(
-                self.inventory.historical_recurrence.get(subject.rule_id),
-                "Operator-supplied recurrence indicator for this rule.",
+                recurrence,
+                "Confirmed occurrences in separate authorized historical investigations."
+                if memory_digest
+                else "Operator-supplied recurrence indicator for this rule.",
                 refs,
                 "inferred",
             ),
@@ -360,4 +371,5 @@ class Observations:
             containment_reference=containment_reference,
             containment_event_id=containment_event_id,
             residual_risk=residual,
+            recurrence_policy_digest=memory_digest,
         )

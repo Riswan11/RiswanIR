@@ -107,7 +107,10 @@ def calculate(
         else "assessed"
     )
     digest = sha256(canonical_json(policy.model_dump(mode="json")))
-    inputs_digest = sha256(canonical_json(inputs.model_dump(mode="json")))
+    input_data = inputs.model_dump(mode="json")
+    if input_data["recurrence_policy_digest"] is None:
+        input_data.pop("recurrence_policy_digest")
+    inputs_digest = sha256(canonical_json(input_data))
     assessment_id = identifier(
         investigation_id,
         inputs.subject.kind,

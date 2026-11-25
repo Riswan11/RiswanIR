@@ -95,3 +95,12 @@ Use the [risk register](risk-register.md) for owners and review triggers, and th
 | Information disclosure | Assessment IDs or evidence references reveal another investigation. | Case-scoped repository reads and subject validation. | Local single-operator access is the authorization boundary. |
 | Repudiation | Reassessment conceals the original decision basis. | Append-only history preserves exact factor inputs, policy, original references, and trigger. | No external immutable archive. |
 | Spoofing | Valid hashes are mistaken for proof of origin. | Integrity and source corroboration have separate inputs and explanations. | Imported CloudTrail remains unauthenticated unless supported by provenance. |
+
+## Historical memory
+
+| STRIDE | Threat | Existing control | Residual risk |
+| --- | --- | --- | --- |
+| Tampering and spoofing | A forged or duplicated case influences baselines and recurrence. | Custody verification before admission, evidence-linked reviews, account scope, category digests, and raw-reference and lineage deduplication. | Imported source claims and self-reported local classifications still need review. |
+| Information disclosure | History leaks unrelated account evidence or raw credentials. | Bound account-scope queries, current authorization and archival policy intersection, minimized records and scoped pseudonyms. | Privileged workstation access can read SQLite or test pseudonym guesses. |
+| Repudiation | Historical retrieval or a classification change is disputed. | Audit records capture case and time with policy or result digests, and classifications retain their evidence references. | Audit storage is local. |
+| Denial of service | A large history scan consumes processing or storage. | Candidate and output bounds, category expiration, explicit purge and minimized features. | Heavy repeated local calls can still consume resources. |
