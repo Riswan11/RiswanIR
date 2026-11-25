@@ -1,6 +1,9 @@
 """Provenance and versioned links for retained evidence."""
 
 from enum import StrEnum
+from typing import Annotated
+
+from pydantic import StringConstraints
 
 from .base import DomainModel, Text, Timestamp
 
@@ -13,10 +16,12 @@ class CollectionMethod(StrEnum):
 
 
 class CollectionContext(DomainModel):
-    source_location: Text | None = None
+    source_location: Annotated[str, StringConstraints(min_length=1, max_length=2048)] | None = None
     collection_method: CollectionMethod = CollectionMethod.API
     collected_at: Timestamp | None = None
     collector_id: Text | None = None
+    collection_account_id: Text | None = None
+    collection_region: Text | None = None
 
 
 class EvidenceProvenance(CollectionContext):

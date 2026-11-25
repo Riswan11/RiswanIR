@@ -10,3 +10,4 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0006 Deterministic detection](0006-deterministic-detection.md)
 - [0007 Human-in-the-loop response](0007-human-in-the-loop.md)
 - [0008 DevSecOps quality gates](0008-devsecops-quality-gates.md)
+- [0009 Read-only AWS collection](0009-aws-read-only-collection.md)

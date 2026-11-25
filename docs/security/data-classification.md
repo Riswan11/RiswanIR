@@ -8,6 +8,6 @@
 | Normalized evidence, identity fields, IPs, account IDs, graph, scores and audit decisions | Restricted | Local SQLite and API responses. Apply workstation access and backup policies. Hashes and identifiers can still expose operational context. |
 | Access keys and session tokens encountered in exports | Secret | May appear in the retained raw payload and forensic exports. Correlation uses credential IDs during processing. Normalized records omit credential material. |
 | Source, CI configuration, dependency pins and SBOM | Integrity-critical | GitHub and build artifacts. Protect changes with review and check gates. Review artifacts before redistribution. |
-| GitHub tokens, signing material and future connector credentials | Secret | Keep in the relevant platform’s credential store. Never include them in docs, fixtures, logs or public security reports. |
+| GitHub tokens, signing material and connector credentials | Secret | AWS credentials come from the local SDK chain and remain transient in SentinelForge. Never include credentials in docs, logs or public security reports. |
 
 Raw retention is explicit through the local CLI. The app has no scheduler, app-managed encryption at rest, or secure erasure guarantee. The operator is responsible for permissions, backup handling and disposal. [Evidence custody](../architecture/evidence-custody.md)

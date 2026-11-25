@@ -19,6 +19,8 @@ The local SQLite database defaults to `sentinelforge.sqlite3`. Set `SENTINELFORG
 
 New investigations retain original CloudTrail record values in local SQLite. Raw telemetry can contain credentials or other sensitive data. Keep the database, backups, and forensic exports under restricted workstation access. See [evidence custody, verification, and retention](docs/architecture/evidence-custody.md) for local commands.
 
+For account-scoped CloudTrail Event History or S3 collection, use the local `sentinelforge-collect` CLI. See [AWS collection configuration and IAM guidance](docs/architecture/aws-collection.md).
+
 After installation, you can also start the app with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
 
 ## Investigation workflow
@@ -40,7 +42,7 @@ After installation, you can also start the app with `sentinelforge` or `python -
 | POST | `/v1/investigations/{id}/actions/{action_id}/approve` | Record approval with a reviewer name |
 | POST | `/v1/investigations/{id}/actions/{action_id}/reject` | Record rejection with a reviewer name |
 
-This release is for single-user local testing. It uses Pydantic for validation and SQLite for persistence, accepts exported records, and records advisory decisions only. Live AWS collection, cloud remediation, authenticated multi-user access, and model-based planning are outside this release.
+This release is for single-user local testing. It uses Pydantic for validation and SQLite for persistence, accepts exported records or read-only AWS collection, and records advisory decisions only. Cloud remediation, authenticated multi-user access, and model-based planning are outside this release.
 
 ## Technical documentation
 

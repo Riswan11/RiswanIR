@@ -7,7 +7,8 @@
 | TB-03 App process to OS and storage | SQLite file, environment settings, DB path, logs and backups | The process inherits local account privileges. Filesystem ownership and permissions are external safeguards. SQLite constraints protect normal app writes. |
 | TB-04 Contribution to GitHub workflows and releases | Pull requests, workflow scripts, dependencies, artifacts, branch settings | Treat contributor code and dependency inputs as untrusted. Review changes and use scoped permissions, pinned tools and required checks. |
 | TB-05 Public demo to visitor browser | Synthetic case assets, demo interactions and local browser notes | Public read access is intentional. Storage is browser-local. The demo has no connection to the investigation database. |
+| TB-06 Local collector to AWS | AWS SDK credential chain, STS, CloudTrail Event History and the scoped S3 archive | Require temporary credentials, verify account and bucket owner, and use verified TLS. Direct SDK roles, trust policy, and key permissions are managed in AWS. |
 
-Future authenticated tenancy, model-provider calls, connector credentials, and remediation execution each introduce a new trust boundary. Update this inventory before enabling any of them.
+Future authenticated tenancy, model-provider calls, and remediation execution each introduce a new trust boundary. Update this inventory before enabling them.
 
 [System context diagram](../architecture/diagrams/system-context.md) · [STRIDE threats](threat-model.md)

@@ -1,6 +1,7 @@
 import io
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from wsgiref.util import setup_testing_defaults
 from wsgiref.validate import validator
@@ -9,7 +10,56 @@ import pytest
 
 from sentinelforge.api.http import Application
 from sentinelforge.models import InvestigationRequest
+from sentinelforge.models.collection import CollectionRequest
+from sentinelforge.models.connector import ConnectorConfig
 from sentinelforge.storage.sqlite import Store
+
+
+@pytest.fixture
+def aws_config(investigation_request):
+    return ConnectorConfig.model_validate(
+        {
+            "kind": "cloudtrail",
+            "account": {"account_id": "123456789012", "region": "us-east-1"},
+            "principal": investigation_request.principal,
+            "window_minutes": 60,
+        }
+    )
+
+
+@pytest.fixture
+def s3_config(aws_config):
+    return ConnectorConfig.model_validate(
+        {
+            **aws_config.model_dump(),
+            "kind": "s3",
+            "s3": {
+                "bucket": "example-telemetry",
+                "bucket_region": "us-east-1",
+                "owner_account_id": "123456789012",
+            },
+        }
+    )
+
+
+@pytest.fixture
+def aws_window():
+    start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+        hour=1, minute=0, second=0, microsecond=0
+    )
+    return CollectionRequest(start=start, end=start + timedelta(hours=1))
+
+
+@pytest.fixture
+def fake_aws_session():
+    import boto3
+
+    return boto3.Session(
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+        aws_session_token="test",
+        region_name="us-east-1",
+    )
 
 
 @pytest.fixture(autouse=True)
