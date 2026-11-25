@@ -218,7 +218,7 @@ def test_relationship_history_and_approved_network():
 
 def test_explicit_failed_outcome_rule_and_actor_isolation():
     rule = default_registry().select({"SF-AWS-DEF-001": "1.0.0"})[0]
-    rule = rule.model_copy(update={"outcomes": ["failure"]})
+    rule = rule.model_copy(update={"outcomes": ("failure",)})
     successful = canonical("stop", 1, "cloudtrail", "StopLogging")
     failed = successful.model_copy(
         update={"outcome": successful.outcome.model_copy(update={"status_id": Status.FAILURE})}
@@ -263,3 +263,10 @@ def test_targeted_configuration_rules_ignore_legitimate_changes(
     assert not evaluate(
         [canonical("routine", 1, service, operation, params)], [rule], POLICY
     ).result.findings
+
+
+def test_guardduty_update_requires_explicit_disable_signal():
+    rule = default_registry().select({"SF-AWS-DEF-003": "1.0.0"})[0]
+    for flag in (None, True, False):
+        event = canonical("guard", 5, "guardduty", "UpdateDetector", {"enable": flag})
+        assert bool(evaluate([event], [rule], POLICY).result.findings) is (flag is False)

@@ -122,7 +122,8 @@
   description: "GuardDuty monitoring disabled recorded in successful AWS activity."
   severity: "high"
   provider: "AWS"
-  conditions: [{"field":"activity.service","operator":"in","value":["guardduty.amazonaws.com","guardduty.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["DeleteDetector","StopMonitoringMembers"]}]
+  conditions: [{"field":"activity.service","operator":"in","value":["guardduty.amazonaws.com","guardduty.amazonaws.com.cn"]},{"field":"activity.operation","operator":"in","value":["DeleteDetector","StopMonitoringMembers","UpdateDetector"]}]
+  any_conditions: [{"field":"activity.operation","operator":"in","value":["DeleteDetector","StopMonitoringMembers"]},{"field":"context.monitoring_disabled","operator":"equals","value":true}]
   suppression: {"window_minutes":30,"fields":["actor.uid","resource.uid"]}
   mitre: {"tactics":["defense-evasion"],"techniques":["T1562.001"]}
   recommendation: "Review the evidence and validate the business justification for guardDuty monitoring disabled."

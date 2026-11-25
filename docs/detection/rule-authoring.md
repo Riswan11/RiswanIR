@@ -39,4 +39,4 @@ This example uses synthetic inventory values.
 }
 ```
 
-Resource inventory keys match the canonical resource identifier or selected request field, such as an S3 bucket name or security group ID. Keep the YAML and JSON files writable only by trusted local operators. Review and test rule changes in Git, including a legitimate and missing-context case. The engine rejects arbitrary operators, YAML aliases, tags, duplicate keys, and oversized configurations. It does not execute rule expressions or remediation.
+Resource inventory keys match the canonical resource identifier or selected request field, such as an S3 bucket name or security group ID. Use `ACCOUNT/RESOURCE` for an account-specific entry that takes precedence over the resource-only key. Keep the YAML and JSON files writable only by trusted local operators. Review and test rule changes in Git, including a legitimate and missing-context case. The engine rejects arbitrary operators, YAML aliases, tags, duplicate keys, and oversized configurations. It does not execute rule expressions or remediation.

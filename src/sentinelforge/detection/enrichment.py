@@ -56,7 +56,11 @@ def enrich(
         "cloud.account": account,
         "cloud.region": event.cloud.region if event.cloud else None,
         "resource.uid": resource,
-        "resource.criticality": context.resources.get(resource or ""),
+        "resource.criticality": context.resources.get(
+            f"{account}/{resource}", context.resources.get(resource)
+        )
+        if resource
+        else None,
         "context.environment": context.account_environments.get(target_account or ""),
         "context.cross_account": source_account != target_account
         if source_account and target_account
@@ -74,6 +78,7 @@ def enrich(
         "context.public_policy",
         "context.admin_policy",
         "context.external_snapshot",
+        "context.monitoring_disabled",
     ):
         signal = signals.get(name.split(".", 1)[1])
         result[name] = signal if isinstance(signal, bool) else None

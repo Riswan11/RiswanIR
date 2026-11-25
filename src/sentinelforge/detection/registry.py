@@ -29,7 +29,8 @@ def load_rules(data: bytes) -> list[DetectionRule]:
         for token in yaml.scan(data, Loader=yaml.SafeLoader):
             if isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)):
                 raise ValueError("Rule YAML cannot use aliases, anchors or explicit tags.")
-        rows = yaml.load(data, Loader=RuleLoader)  # nosec B506 - SafeLoader subclass
+        # RuleLoader derives from SafeLoader and rejects ambiguous mappings.
+        rows = yaml.load(data, Loader=RuleLoader)  # nosec B506
     except (yaml.YAMLError, RecursionError):
         raise ValueError("Invalid detection rule YAML.") from None
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_RULES:

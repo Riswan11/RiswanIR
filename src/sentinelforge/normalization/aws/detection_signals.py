@@ -14,6 +14,7 @@ class DetectionSignals(CanonicalModel):
     public_policy: bool | None = None
     unrestricted_ingress: bool | None = None
     external_snapshot: bool | None = None
+    monitoring_disabled: bool | None = None
 
 
 def entries(value: object) -> list[Any]:
@@ -113,6 +114,9 @@ def project(record: dict[str, Any], operation: str, account: str | None) -> Dete
         else None,
         unrestricted_ingress=unrestricted_ingress(params)
         if operation in {"AuthorizeSecurityGroupIngress", "ModifySecurityGroupRules"}
+        else None,
+        monitoring_disabled=(not params["enable"])
+        if operation == "UpdateDetector" and isinstance(params.get("enable"), bool)
         else None,
         external_snapshot=external_snapshot(params, account)
         if operation == "ModifySnapshotAttribute"

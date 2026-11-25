@@ -32,6 +32,7 @@ FieldPath = Literal[
     "context.public_policy",
     "context.admin_policy",
     "context.external_snapshot",
+    "context.monitoring_disabled",
 ]
 Scalar = Text | StrictBool | StrictInt
 Version = Annotated[
