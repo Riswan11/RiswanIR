@@ -4,8 +4,6 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import (
-    AfterValidator,
-    BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
@@ -13,21 +11,14 @@ from pydantic import (
     model_validator,
 )
 
-from ..core.fields import utc_timestamp
 from ..ingestion.exports import export_records
+from .base import DomainModel, Text, Timestamp
+from .evidence import Evidence as Evidence
+from .security_event import NormalizedEvent as NormalizedEvent
 
-Text = Annotated[str, StringConstraints(min_length=1, max_length=300, strip_whitespace=True)]
 Reviewer = Annotated[str, StringConstraints(min_length=1, max_length=100, strip_whitespace=True)]
 EvidenceReferences = Annotated[list[Text], Field(min_length=1)]
 CloudTrailRecord = dict[str, object]
-
-
-def validate_timestamp(value: str) -> str:
-    utc_timestamp(value)
-    return value
-
-
-Timestamp = Annotated[str, AfterValidator(validate_timestamp)]
 
 
 class Severity(StrEnum):
@@ -55,13 +46,6 @@ class ApprovalDecision(StrEnum):
     REJECT = "reject"
 
 
-class DomainModel(BaseModel):
-    model_config = ConfigDict(hide_input_in_errors=True)
-
-    def payload(self) -> dict[str, object]:
-        return self.model_dump(mode="json", by_alias=True, exclude_unset=True)
-
-
 class InvestigationRequest(DomainModel):
     title: Text
     principal: Text
@@ -71,27 +55,6 @@ class InvestigationRequest(DomainModel):
     @classmethod
     def unwrap_export(cls, value: object) -> object:
         return export_records(value)
-
-
-class NormalizedEvent(DomainModel):
-    id: Text
-    source: Literal["aws.cloudtrail"]
-    observed_at: Timestamp
-    event: Text
-    operation: str | None = None
-    principal: str | None = None
-    target: str | None = None
-    source_ip: str | None = None
-    user_agent: str | None = None
-    region: str | None = None
-    account_id: str | None = None
-    recipient_account_id: str | None = None
-
-
-class Evidence(NormalizedEvent):
-    query: Text
-    linked_from_evidence_id: Text | None = None
-    integrity_hash: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
 
 
 class Finding(DomainModel):

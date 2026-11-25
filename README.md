@@ -13,7 +13,7 @@ python server.py
 
 Open [the analyst workspace](http://127.0.0.1:8000). Select **Load sample**, then **Investigate** to run a synthetic incident. Review the evidence and graph, enter a reviewer name, and save a disposition. Submit the sample again to see the earlier review in related investigations.
 
-For your own data, paste a CloudTrail log with a top-level `Records` array, a `lookup-events` export with an `Events` array, or a plain array of records. Supply a starting ARN from `userIdentity.arn`. The API accepts an object with `title`, `principal`, and `records` at `POST /v1/investigations`. Store real exports outside the repository or in the ignored `local-data/` directory.
+For your own data, paste a single CloudTrail event, a log with a top-level `Records` array, a `lookup-events` export with an `Events` array, or a plain array of records. Supply a starting ARN from `userIdentity.arn`. The API accepts an object with `title`, `principal`, and `records` at `POST /v1/investigations`. Store real exports outside the repository or in the ignored `local-data/` directory.
 
 The local SQLite database defaults to `sentinelforge.sqlite3`. Set `SENTINELFORGE_DB` to choose a different file or `SENTINELFORGE_PORT` to change the port.
 
@@ -21,7 +21,7 @@ After installation, you can also start the app with `sentinelforge` or `python -
 
 ## Investigation workflow
 
-- Match successful calls to the starting ARN. Follow subsequent calls by joining the access key ID returned by STS or IAM to the caller's access key ID, including across chained roles and accounts. Edges cite the issuance event. Missing key IDs and equal recorded timestamps can leave gaps. [AWS CloudTrail IAM and STS examples](https://docs.aws.amazon.com/IAM/latest/UserGuide/cloudtrail-integration.html)
+- Capture successful and failed calls in evidence. Only successful calls contribute to scoring, recommendations, or credential issuance links. Missing key IDs and equal recorded timestamps can leave gaps. See the [CloudTrail normalization contract](docs/architecture/cloudtrail-normalization.md).
 - Produce an ordered timeline, hashed normalized evidence, and an identity–event–target graph.
 - Score individual calls, repeated calls, and ordered events linked by credentials. Each rule cites the matched events. Scores indicate triage priority and require analyst interpretation. Evidence hashes help verify normalized record integrity. Source authenticity depends on the supplied export.
 - Find previously reviewed investigations by shared event types. Keep review history and record one approval or rejection per advisory.
