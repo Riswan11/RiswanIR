@@ -34,3 +34,12 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0024. Publish versioned security finding contracts](0024-cross-product-findings.md)
 - [0025. Organize platform, data, IR and composition in one repository](0025-repository-package-layout.md)
 - [0026. Require a measured reason for service extraction](0026-future-service-extraction.md)
+
+- [0027. Centralize identity behind a platform boundary](0027-centralized-identity.md)
+- [0028. Prefer a managed OIDC identity provider](0028-managed-identity-provider.md)
+- [0029. Use Authorization Code, PKCE, state and nonce](0029-oidc-oauth-standards.md)
+- [0030. Use stable internal identity IDs](0030-internal-identity-model.md)
+- [0031. Separate provider tokens from platform sessions](0031-token-session-security.md)
+- [0032. Distinguish human and workload identities](0032-human-and-workload-identities.md)
+- [0033. Audit authentication without storing credentials](0033-authentication-audit.md)
+- [0034. Isolate workstation and OIDC environments](0034-identity-environment-isolation.md)

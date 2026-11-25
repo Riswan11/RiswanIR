@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
       - name: Generate a CycloneDX SBOM for the installed app
         run: |
-          python -m pip install --target "$RUNNER_TEMP/runtime-packages" .
+          python -m pip install --target "$RUNNER_TEMP/runtime-packages" ".[identity]"
           bash .github/scripts/install-scanner.sh syft
           "$RUNNER_TEMP/scanners/syft" scan "dir:$RUNNER_TEMP/runtime-packages" \
             --source-name RiswanIR --source-version "$GITHUB_SHA" \

@@ -10,7 +10,7 @@ from uuid import UUID
 from .exceptions import ContextRequiredError
 from .identifiers import require_label
 
-ActorType = Literal["human", "service", "agent"]
+ActorType = Literal["human", "service", "integration", "agent"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,7 @@ class PlatformContext:
     def __post_init__(self) -> None:
         if not isinstance(self.tenant_id, UUID) or not self.tenant_id.int:
             raise ValueError("A non-nil tenant UUID is required.")
-        if self.actor_type not in ("human", "service", "agent"):
+        if self.actor_type not in ("human", "service", "integration", "agent"):
             raise ValueError("Unsupported actor type.")
         for value in (self.actor_id, self.product_id, self.request_id, self.correlation_id):
             require_label(value)
