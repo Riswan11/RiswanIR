@@ -24,7 +24,14 @@ def main(*, local_launcher: bool = False):
         if not config or not identity_db:
             raise SystemExit("Set RISWAN_IR_OIDC_CONFIG and RISWAN_IR_IDENTITY_DB.")
         try:
-            application = compose_identity(Path(config), Path(identity_db), Path(database_path()))
+            control, hosted = setting("CONTROL_DB"), setting("HOSTED_DB")
+            application = compose_identity(
+                Path(config),
+                Path(identity_db),
+                Path(database_path()),
+                control_db=Path(control) if control else None,
+                hosted_db=Path(hosted) if hosted else None,
+            )
         except (ValueError, OSError):
             raise SystemExit("Invalid identity runtime configuration.") from None
         with make_server(

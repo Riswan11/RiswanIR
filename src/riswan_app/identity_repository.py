@@ -111,6 +111,13 @@ class SQLiteIdentityRepository:
             db.execute("PRAGMA foreign_keys = ON")
             yield db
 
+    def is_active_human(self, identity_id: UUID) -> bool:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT kind, status FROM identities WHERE id = ?", (str(identity_id),)
+            ).fetchone()
+            return row is not None and tuple(row) == ("human", "active")
+
     def resolve(self, external: ExternalIdentity, now: datetime) -> PlatformIdentity:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")

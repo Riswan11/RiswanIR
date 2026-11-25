@@ -1,6 +1,7 @@
 """SQLite persistence for trusted authorization policy snapshots and audit decisions."""
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
@@ -29,6 +30,11 @@ from riswan_platform.authorization.enforcement import AccessDenied
 class AuthorizationRepository:
     def __init__(self, path: Path):
         self.path = path
+        if os.name == "posix":
+            try:
+                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                pass
         self._transaction: ContextVar[sqlite3.Connection | None] = ContextVar(
             "authorization_transaction", default=None
         )
@@ -49,6 +55,7 @@ class AuthorizationRepository:
             yield
             return
         with closing(sqlite3.connect(self.path)) as db:
+            db.execute("PRAGMA foreign_keys = ON")
             db.execute("BEGIN IMMEDIATE")
             token = self._transaction.set(db)
             try:
@@ -57,6 +64,19 @@ class AuthorizationRepository:
                 # Audit decisions are retained when a protected operation is denied.
                 self._transaction.reset(token)
                 db.commit()
+
+    @contextmanager
+    def atomic(self) -> Iterator[sqlite3.Connection]:
+        """Roll back a business mutation while retaining outer authorization audit entries."""
+        with self.transaction(), self._connection() as db:
+            db.execute("SAVEPOINT control_mutation")
+            try:
+                yield db
+            except BaseException:
+                db.execute("ROLLBACK TO control_mutation")
+                raise
+            finally:
+                db.execute("RELEASE control_mutation")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
