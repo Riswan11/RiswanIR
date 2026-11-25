@@ -44,3 +44,7 @@ The temporal module matches configured event-time sequences against canonical ev
 ## Risk and confidence
 
 The scoring adapter projects case-local evidence and inventory into provider-neutral weighted inputs. The case store archives risk, confidence, priorities and policy versions separately from triage fields. See [risk scoring](../detection/risk-scoring.md).
+
+## Historical memory
+
+The memory adapter projects minimized case features from verified evidence. It stores distinct memory categories, applies scoped point-in-time retrieval, and supplies the optional recurrence factor to risk scoring. See [historical investigation memory](../detection/historical-memory.md).

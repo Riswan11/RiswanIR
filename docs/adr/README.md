@@ -21,3 +21,5 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0014. Correlate event-time sequences within case revisions](0014-temporal-correlation.md)
 
 - [0015. Preserve independent risk and confidence assessments](0015-risk-assessment-history.md)
+
+- [0016. Retrieve scoped and evidence-backed historical intelligence](0016-scoped-historical-memory.md)

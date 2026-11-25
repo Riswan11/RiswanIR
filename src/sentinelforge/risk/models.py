@@ -102,6 +102,7 @@ class AssessmentInputs(CanonicalModel):
     containment_reference: Text | None = None
     containment_event_id: Text | None = None
     residual_risk: dict[Text, Factor] | None = None
+    recurrence_policy_digest: Text | None = None
 
 
 class Assessment(CanonicalModel):

@@ -5,12 +5,14 @@ import logging
 import re
 from http import HTTPStatus
 from importlib.resources import files
+from urllib.parse import parse_qs
 
 from .. import frontend
 from ..core.errors import NotFoundError
 from ..core.fields import now
 from ..correlation.temporal.service import serve as serve_temporal
 from ..knowledge_graph.service import serve_graph
+from ..memory.models import Feedback as MemoryFeedback
 from ..models import (
     ActionDecision,
     AnalystFeedback,
@@ -89,6 +91,8 @@ class Application:
 
     def route(self, env):
         method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
+        if path == "/v1/memory/expire" and method == "POST":
+            return 200, {"expired": self.store.memory_expire()}
         if path == "/v1/investigations":
             if method == "GET":
                 return 200, [summary.payload() for summary in self.store.list()]
@@ -98,6 +102,28 @@ class Application:
         match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
         if match:
             investigation_id, suffix = match.groups()
+            if method == "GET" and suffix == "/memory":
+                query = env.get("QUERY_STRING", "")
+                if len(query) > 512:
+                    raise ValueError("Memory query is too large.")
+                params = parse_qs(
+                    query, strict_parsing=True, keep_blank_values=True, max_num_fields=2
+                )
+                if set(params) - {"as_of"} or len(params.get("as_of", [])) > 1:
+                    raise ValueError("Provide at most one as_of timestamp.")
+                return 200, self.store.memory_intelligence(
+                    investigation_id, params.get("as_of", [None])[0]
+                ).payload()
+            if method == "POST" and suffix == "/memory/index":
+                return 200, {"indexed": self.store.memory_index(investigation_id)}
+            if method == "POST" and suffix == "/memory/feedback":
+                self.store.memory_feedback(
+                    investigation_id, MemoryFeedback.model_validate(self.body(env))
+                )
+                return 201, {"recorded": True}
+            if method == "DELETE" and suffix == "/memory":
+                self.store.memory_remove(investigation_id)
+                return 200, {"deleted": True}
             if method == "GET" and (suffix == "/risk" or suffix.startswith("/risk/")):
                 return 200, serve_risk(
                     self.store, investigation_id, suffix, env.get("QUERY_STRING", "")
