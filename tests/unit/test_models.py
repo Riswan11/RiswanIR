@@ -4,8 +4,8 @@ import unittest
 
 from pydantic import ValidationError
 
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.models import (
+from riswan_ir.investigation.analysis import analyze
+from riswan_ir.models import (
     ActionDecision,
     AnalystFeedback,
     Evidence,

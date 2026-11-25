@@ -1,10 +1,10 @@
 import pytest
 
-from sentinelforge.models.canonical_event import CanonicalModel
-from sentinelforge.models.schema import SchemaExtension, SchemaMapping
-from sentinelforge.normalization.aws.cloudtrail import normalize
-from sentinelforge.normalization.aws.ocsf_mapper import REGISTRY, map_event
-from sentinelforge.schema.registry import OCSF, SchemaRegistry
+from riswan_ir.models.canonical_event import CanonicalModel
+from riswan_ir.models.schema import SchemaExtension, SchemaMapping
+from riswan_ir.normalization.aws.cloudtrail import normalize
+from riswan_ir.normalization.aws.ocsf_mapper import REGISTRY, map_event
+from riswan_ir.schema.registry import OCSF, SchemaRegistry
 
 
 class ExampleExtension(CanonicalModel):

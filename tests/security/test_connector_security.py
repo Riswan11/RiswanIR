@@ -5,11 +5,11 @@ from botocore.exceptions import EndpointConnectionError
 from botocore.stub import Stubber
 from pydantic import ValidationError
 
-from sentinelforge.connectors.aws.authentication import log_prefix, session_policy
-from sentinelforge.connectors.aws.requests import RequestBudget
-from sentinelforge.connectors.base import CollectionFailure
-from sentinelforge.models.collection import CollectionRequest
-from sentinelforge.models.connector import ConnectorConfig
+from riswan_ir.connectors.aws.authentication import log_prefix, session_policy
+from riswan_ir.connectors.aws.requests import RequestBudget
+from riswan_ir.connectors.base import CollectionFailure
+from riswan_ir.models.collection import CollectionRequest
+from riswan_ir.models.connector import ConnectorConfig
 
 
 @pytest.mark.parametrize(

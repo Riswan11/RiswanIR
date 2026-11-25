@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from sentinelforge.correlation.temporal.registry import load_rules
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.correlation.temporal.registry import load_rules
+from riswan_ir.storage.sqlite import Store
 from tests.integration.test_temporal_correlation import (
     ACCOUNT,
     DESTINATION,
@@ -44,7 +44,7 @@ def test_cross_account_requires_directional_local_opt_in(reverse, tmp_path, monk
             ),
             encoding="utf-8",
         )
-        monkeypatch.setenv("SENTINELFORGE_TEMPORAL_POLICY", str(policy))
+        monkeypatch.setenv("RISWAN_IR_TEMPORAL_POLICY", str(policy))
     store = Store(tmp_path / "case.sqlite3")
     report = create(store, scenario(3))
     assert PREFIX + "003" not in {item.id for item in store.temporal_result(report.id).incidents}

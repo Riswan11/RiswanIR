@@ -1,8 +1,8 @@
 import pytest
 
-from sentinelforge.normalization.aws.cloudtrail import normalize
-from sentinelforge.normalization.aws.ocsf_mapper import REGISTRY, map_event
-from sentinelforge.schema.export import ocsf_payload
+from riswan_ir.normalization.aws.cloudtrail import normalize
+from riswan_ir.normalization.aws.ocsf_mapper import REGISTRY, map_event
+from riswan_ir.schema.export import ocsf_payload
 
 
 @pytest.mark.parametrize(

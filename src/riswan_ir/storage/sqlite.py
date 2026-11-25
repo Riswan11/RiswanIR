@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
+from ..core.config import setting
 from ..core.errors import NotFoundError
 from ..core.fields import now, utc_timestamp
 from ..correlation.aws import arn_account, partition
@@ -96,8 +97,8 @@ class Store:
         detection_registry: RuleRegistry | None = None,
     ):
         self.path = path
-        policy = os.getenv("SENTINELFORGE_DETECTION_CONTEXT")
-        registry = os.getenv("SENTINELFORGE_DETECTION_RULES")
+        policy = setting("DETECTION_CONTEXT")
+        registry = setting("DETECTION_RULES")
         if detection_context is None and policy:
             with Path(policy).open("rb") as source:
                 data = source.read(1_000_001)
@@ -176,9 +177,9 @@ class Store:
         SQLiteGraphRepository(db).save(graph)
         prior = temporal_repository.load(db, previous) if previous else None
         lineage = prior.result.lineage_id if prior else previous or case_id
-        rules_path = os.getenv("SENTINELFORGE_TEMPORAL_RULES")
+        rules_path = setting("TEMPORAL_RULES")
         temporal_rules = read_rules(Path(rules_path)) if rules_path else default_rules()
-        policy_path = os.getenv("SENTINELFORGE_TEMPORAL_POLICY")
+        policy_path = setting("TEMPORAL_POLICY")
         policy = TemporalPolicy(enrichment=self.detection_context)
         if policy_path:
             with Path(policy_path).open("rb") as source:

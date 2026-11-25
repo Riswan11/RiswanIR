@@ -3,19 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SentinelForge</title>
+<title>Riswan IR</title>
+<link rel="icon" href="/assets/ir-favicon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/assets/ir-favicon-light.svg" media="(prefers-color-scheme: light)">
 <style>
-  body { margin: 0; background: #111820; color: #edf3f8; font: 16px system-ui, sans-serif; }
+  body { margin: 0; background: #080F1D; color: #F8FAFC; font: 16px Inter, system-ui, sans-serif; }
   main { max-width: 1100px; margin: auto; padding: 32px 20px; }
   header { border-bottom: 1px solid #354452; margin-bottom: 24px; }
-  h1 { margin-bottom: 4px; } h2 { margin-top: 0; }
+  h1 { margin-bottom: 4px; } h1 img { width: 260px; max-width: 100%; display: block; }
+  pre, code { font-family: "JetBrains Mono", monospace; }
+  :focus-visible { outline: 2px solid #38BDF8; outline-offset: 2px; } h2 { margin-top: 0; }
   p, label { color: #bdcbd8; } label { display: block; margin: 12px 0; }
   .layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 20px; }
-  section { background: #19242e; border: 1px solid #354452; border-radius: 12px; padding: 20px; }
+  section { background: #111B2D; border: 1px solid #354452; border-radius: 12px; padding: 20px; }
   input, textarea, select, button { font: inherit; padding: 8px; border-radius: 6px; border: 1px solid #5c7386; }
-  input, textarea, select { width: 100%; box-sizing: border-box; color: inherit; background: #111820; margin-top: 4px; }
-  button { background: #a2ecd5; color: #13251f; cursor: pointer; margin: 3px 4px 3px 0; }
-  button.secondary { color: #edf3f8; background: #283848; }
+  input, textarea, select { width: 100%; box-sizing: border-box; color: inherit; background: #080F1D; margin-top: 4px; }
+  button { background: #2DD4BF; color: #13251f; cursor: pointer; margin: 3px 4px 3px 0; }
+  button.secondary { color: #F8FAFC; background: #283848; }
   li { margin: 6px 0; overflow-wrap: anywhere; } pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   #status { min-height: 22px; color: #ffce8d; }
   @media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
@@ -23,7 +27,7 @@
 </head>
 <body>
 <main>
-<header><h1>SentinelForge</h1><p>CloudTrail investigation workspace</p></header>
+<header><h1><img src="/assets/ir-logo-dark.svg" alt="Riswan IR"></h1><p>CloudTrail investigation workspace</p></header>
 <div class="layout">
 <section>
   <h2>New investigation</h2>

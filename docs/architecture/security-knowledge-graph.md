@@ -1,6 +1,6 @@
 # Security knowledge graph
 
-SentinelForge builds a case-scoped graph after canonical event mapping, identity and session correlation, detection, and evidence transformation. The versioned ontology defines allowable directional relationships among identities, sessions, resources, accounts, networks, events, permissions, findings, threats, evidence, investigations, and advisory actions.
+Riswan IR builds a case-scoped graph after canonical event mapping, identity and session correlation, detection, and evidence transformation. The versioned ontology defines allowable directional relationships among identities, sessions, resources, accounts, networks, events, permissions, findings, threats, evidence, investigations, and advisory actions.
 
 ```mermaid
 flowchart LR

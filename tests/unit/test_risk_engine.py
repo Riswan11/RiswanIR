@@ -2,9 +2,9 @@ from fractions import Fraction
 
 import pytest
 
-from sentinelforge.risk.engine import calculate, classify, weighted
-from sentinelforge.risk.models import AssessmentInputs, Factor, ScoringPolicy, Subject
-from sentinelforge.risk.registry import default_policy
+from riswan_ir.risk.engine import calculate, classify, weighted
+from riswan_ir.risk.models import AssessmentInputs, Factor, ScoringPolicy, Subject
+from riswan_ir.risk.registry import default_policy
 
 NOW = "2026-01-01T00:00:00Z"
 

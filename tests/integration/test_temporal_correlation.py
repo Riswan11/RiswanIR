@@ -2,10 +2,10 @@ from urllib.parse import urlencode
 
 import pytest
 
-from sentinelforge.correlation.temporal.registry import default_rules
-from sentinelforge.models import EvidenceSubmission, InvestigationRequest
-from sentinelforge.models.detection import DetectionContext
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.correlation.temporal.registry import default_rules
+from riswan_ir.models import EvidenceSubmission, InvestigationRequest
+from riswan_ir.models.detection import DetectionContext
+from riswan_ir.storage.sqlite import Store
 from tests.fixtures.cloudtrail import (
     KEY,
     LONG_TERM_KEY,
@@ -199,7 +199,7 @@ def test_every_rule_matches_only_the_complete_evidenced_pattern(number, tmp_path
         '{"cross_account":[{"source":"aws:' + ACCOUNT + '","target":"aws:' + DESTINATION + '"}]}',
         encoding="utf-8",
     )
-    monkeypatch.setenv("SENTINELFORGE_TEMPORAL_POLICY", str(policy))
+    monkeypatch.setenv("RISWAN_IR_TEMPORAL_POLICY", str(policy))
     store = Store(tmp_path / "test.sqlite3", detection_context=context())
     data = scenario(number)
     report = create(store, list(reversed(data)) + [data[0]])
@@ -224,7 +224,7 @@ def test_late_event_preserves_ingestion_times_and_stable_incident_identity(tmp_p
     early = create(store, data[:1])
     state = Store(store.path).temporal_result(early.id)
     assert state.partial_matches and state.incidents == []
-    monkeypatch.setattr("sentinelforge.storage.sqlite.now", lambda: "2025-02-01T04:00:00+00:00")
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: "2025-02-01T04:00:00+00:00")
     completed = store.revise(early.id, EvidenceSubmission(records=data[1:]))
     (first,) = store.temporal_result(completed.id).incidents
     assert first.timeline[0].ingested_at != first.timeline[1].ingested_at

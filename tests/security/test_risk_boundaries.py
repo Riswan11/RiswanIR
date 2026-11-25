@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from sentinelforge.risk.registry import load_policies
+from riswan_ir.risk.registry import load_policies
 from tests.integration.test_risk_assessment import BASE, assessment, restoration, submit
 from tests.integration.test_temporal_correlation import scenario
 
@@ -58,7 +58,7 @@ def test_resource_inventory_is_scoped_to_each_account(client, tmp_path, monkeypa
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("SENTINELFORGE_RISK_INVENTORY", str(config))
+    monkeypatch.setenv("RISWAN_IR_RISK_INVENTORY", str(config))
     raw = scenario(10)[0]
     first = submit(client, [raw])
     principal = ROOT.replace(ACCOUNT, DESTINATION)

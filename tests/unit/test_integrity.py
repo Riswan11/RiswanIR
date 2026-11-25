@@ -1,5 +1,5 @@
-from sentinelforge.evidence.integrity import seal_evidence
-from sentinelforge.normalization.cloudtrail import normalize
+from riswan_ir.evidence.integrity import seal_evidence
+from riswan_ir.normalization.cloudtrail import normalize
 
 
 def test_hash_is_stable_under_raw_field_reordering_and_binds_provenance(cloudtrail):

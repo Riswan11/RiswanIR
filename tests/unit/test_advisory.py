@@ -1,5 +1,5 @@
-from sentinelforge.investigation.analysis import analyze
-from sentinelforge.response.advisory import recommend
+from riswan_ir.investigation.analysis import analyze
+from riswan_ir.response.advisory import recommend
 
 
 def test_advisory_uses_only_access_key_creation_evidence(investigation_request):

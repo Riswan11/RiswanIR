@@ -2,9 +2,9 @@ from urllib.parse import urlencode
 
 import pytest
 
-from sentinelforge.knowledge_graph.builder import build_security_graph
-from sentinelforge.knowledge_graph.ontology import VERSION, Entity, Relation
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.knowledge_graph.builder import build_security_graph
+from riswan_ir.knowledge_graph.ontology import VERSION, Entity, Relation
+from riswan_ir.storage.sqlite import Store
 
 
 def graph_path(report):
@@ -98,7 +98,7 @@ def test_persistent_graph_traverses_correlated_activity_and_provenance(
 
 
 def test_snapshot_upsert_and_legacy_projection(store, investigation_request):
-    from sentinelforge.knowledge_graph.repository import SQLiteGraphRepository
+    from riswan_ir.knowledge_graph.repository import SQLiteGraphRepository
 
     report = store.create(investigation_request)
     graph = store.security_graph(report.id)
@@ -117,7 +117,7 @@ def test_graph_creation_failure_rolls_back_investigation(store, investigation_re
     def fail(report):
         raise ValueError("Graph construction failed.")
 
-    monkeypatch.setattr("sentinelforge.storage.sqlite.build_security_graph", fail)
+    monkeypatch.setattr("riswan_ir.storage.sqlite.build_security_graph", fail)
     with pytest.raises(ValueError, match="Graph construction failed"):
         store.create(investigation_request)
     assert store.list() == []

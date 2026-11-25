@@ -3,7 +3,6 @@
 import argparse
 import json
 import logging
-import os
 import sqlite3
 import sys
 import time
@@ -12,6 +11,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from ..core.config import database_path
 from ..ingestion.orchestrator import next_window, run_collection
 from ..models.collection import CollectionRequest
 from ..models.connector import ConnectorConfig
@@ -39,9 +39,7 @@ def run_due(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument(
-        "--db", type=Path, default=Path(os.environ.get("SENTINELFORGE_DB", "sentinelforge.sqlite3"))
-    )
+    parser.add_argument("--db", type=Path, default=Path(database_path()))
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run")
     run.add_argument("--watch", action="store_true")

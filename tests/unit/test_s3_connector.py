@@ -6,9 +6,9 @@ import pytest
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from sentinelforge.connectors.aws.requests import RequestBudget
-from sentinelforge.connectors.aws.s3 import S3CloudTrailLogs
-from sentinelforge.connectors.base import CollectionFailure
+from riswan_ir.connectors.aws.requests import RequestBudget
+from riswan_ir.connectors.aws.s3 import S3CloudTrailLogs
+from riswan_ir.connectors.base import CollectionFailure
 
 
 def test_s3_reads_gzip_with_expected_owner_and_paginates(

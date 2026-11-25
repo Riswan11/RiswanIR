@@ -1,6 +1,6 @@
 # Historical investigation memory
 
-SentinelForge indexes a minimized, versioned profile after case custody verification. The profile is derived from canonical events, attributed identities and sessions, the knowledge graph, and temporal incident evidence. Historical profiles become retrieval candidates after analyst review. A match supplies leads and evidence references for analyst review.
+Riswan IR indexes a minimized, versioned profile after case custody verification. The profile is derived from canonical events, attributed identities and sessions, the knowledge graph, and temporal incident evidence. Historical profiles become retrieval candidates after analyst review. A match supplies leads and evidence references for analyst review.
 
 ```mermaid
 flowchart LR
@@ -36,7 +36,7 @@ Behavioral baselines use only evidence explicitly cited by authorized-activity f
 
 ## Policy and governance
 
-Set `SENTINELFORGE_MEMORY_POLICY` to a trusted local JSON file. Supported properties include `version`, `observation_days`, `retention_days`, `category_retention`, `enabled_categories`, `minimum_samples`, `minimum_coverage`, `organization_accounts`, and `playbooks`. The `cross_account_categories` setting independently controls category access across an authorized group. By default only episodic, semantic, organizational and analyst feedback memory is shared within such groups. Defaults are a 90-day observation window, 180-day retention and three observations per baseline. Complete account scope is required. By default a query can retrieve only its own account. To authorize a group explicitly, set `organization_accounts` to a list of disjoint lists of partition-qualified account IDs such as `["aws:111122223333", "aws:444455556666"]`.
+Set `RISWAN_IR_MEMORY_POLICY` to a trusted local JSON file. Supported properties include `version`, `observation_days`, `retention_days`, `category_retention`, `enabled_categories`, `minimum_samples`, `minimum_coverage`, `organization_accounts`, and `playbooks`. The `cross_account_categories` setting independently controls category access across an authorized group. By default only episodic, semantic, organizational and analyst feedback memory is shared within such groups. Defaults are a 90-day observation window, 180-day retention and three observations per baseline. Complete account scope is required. By default a query can retrieve only its own account. To authorize a group explicitly, set `organization_accounts` to a list of disjoint lists of partition-qualified account IDs such as `["aws:111122223333", "aws:444455556666"]`.
 
 Retrieval applies both archived policy and current authorization. Unknown or contradictory account attribution fails closed. Outcome classifications are recorded from analyst dispositions. Authorized activity and false positives require a benign disposition and same-case evidence. Confirmed threat requires confirmed disposition. Response memory requires an evidence-linked residual-risk assessment. Feedback never edits detection rules, suppresses alerts, or changes a scoring policy.
 

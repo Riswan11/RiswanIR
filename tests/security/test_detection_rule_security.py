@@ -1,7 +1,7 @@
 import pytest
 
-from sentinelforge.detection.registry import MAX_BYTES, load_rules
-from sentinelforge.models.detection import DetectionCondition
+from riswan_ir.detection.registry import MAX_BYTES, load_rules
+from riswan_ir.models.detection import DetectionCondition
 
 
 @pytest.mark.parametrize(

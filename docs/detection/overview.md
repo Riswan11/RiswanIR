@@ -1,6 +1,6 @@
 # Context-aware detection
 
-SentinelForge evaluates canonical OCSF-aligned events once identity correlation has selected evidence for a case. The AWS mapper adds typed identity metadata and bounded CloudTrail signals for resource identifiers and policy, ingress, and snapshot observations. The engine joins these signals with local inventory for privileged roles, sensitive resources, accounts, approved networks, and known relationships. An earlier successful role assumption in the same investigation also establishes that relationship for later events.
+Riswan IR evaluates canonical OCSF-aligned events once identity correlation has selected evidence for a case. The AWS mapper adds typed identity metadata and bounded CloudTrail signals for resource identifiers and policy, ingress, and snapshot observations. The engine joins these signals with local inventory for privileged roles, sensitive resources, accounts, approved networks, and known relationships. An earlier successful role assumption in the same investigation also establishes that relationship for later events.
 
 ```mermaid
 flowchart LR
@@ -21,12 +21,12 @@ The application saves the rule definitions and inventory used by each investigat
 
 ## Local configuration and replay
 
-Set `SENTINELFORGE_DETECTION_CONTEXT` to a trusted local JSON file and optionally set `SENTINELFORGE_DETECTION_RULES` to a trusted replacement YAML registry. Reload the process after changing configuration. An empty inventory leaves context-dependent conditions unknown. See [rule authoring](rule-authoring.md) for a configuration example and rule semantics.
+Set `RISWAN_IR_DETECTION_CONTEXT` to a trusted local JSON file and optionally set `RISWAN_IR_DETECTION_RULES` to a trusted replacement YAML registry. Reload the process after changing configuration. An empty inventory leaves context-dependent conditions unknown. See [rule authoring](rule-authoring.md) for a configuration example and rule semantics.
 
 ```powershell
-sentinelforge-detect CASE_ID --db sentinelforge.sqlite3
-sentinelforge-detect CASE_ID --db sentinelforge.sqlite3 --version SF-AWS-DEF-001=1.0.0
-sentinelforge-detect CASE_ID --db sentinelforge.sqlite3 --rules reviewed-rules.yml
+riswan-ir-detect CASE_ID --db riswan-ir.sqlite3
+riswan-ir-detect CASE_ID --db riswan-ir.sqlite3 --version SF-AWS-DEF-001=1.0.0
+riswan-ir-detect CASE_ID --db riswan-ir.sqlite3 --rules reviewed-rules.yml
 ```
 
 Replay reads the supplied case, verifies its custody, and uses the case's archived context. The default verifies that the current evaluator reproduces the archived result. Explicit selections may use archived versions, versions in the current registry, or versions in the supplied replacement file. Older cases with valid custody use their existing canonical events or a legacy projection and empty inventory. Older canonical archives may lack newer detection signals. Replay does not rewrite the stored investigation.

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sentinelforge"
+name = "riswan-ir"
 version = "0.1.0"
 description = "Local CloudTrail investigation workspace"
 readme = "README.md"
@@ -20,19 +20,23 @@ quality = ["ruff>=0.11,<1", "mypy>=1.15,<3"]
 security = ["bandit>=1.8,<2", "pip-audit>=2.9,<3"]
 
 [project.scripts]
-sentinelforge = "sentinelforge.__main__:main"
-sentinelforge-evidence = "sentinelforge.evidence.cli:main"
-sentinelforge-collect = "sentinelforge.connectors.cli:main"
-sentinelforge-detect = "sentinelforge.detection.cli:main"
+riswan-ir = "riswan_ir.__main__:main"
+riswan-ir-evidence = "riswan_ir.evidence.cli:main"
+riswan-ir-collect = "riswan_ir.connectors.cli:main"
+riswan-ir-detect = "riswan_ir.detection.cli:main"
+sentinelforge = "riswan_ir.__main__:main"
+sentinelforge-evidence = "riswan_ir.evidence.cli:main"
+sentinelforge-collect = "riswan_ir.connectors.cli:main"
+sentinelforge-detect = "riswan_ir.detection.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sentinelforge.frontend" = ["index.html"]
-"sentinelforge.detection" = ["aws-rules.yml"]
-"sentinelforge.correlation.temporal" = ["aws-rules.yml"]
-"sentinelforge.risk" = ["default.yml"]
+"riswan_ir.frontend" = ["index.html", "*.svg"]
+"riswan_ir.detection" = ["aws-rules.yml"]
+"riswan_ir.correlation.temporal" = ["aws-rules.yml"]
+"riswan_ir.risk" = ["default.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,7 +45,7 @@ addopts = ["--import-mode=importlib"]
 
 [tool.coverage.run]
 branch = true
-source = ["sentinelforge"]
+source = ["riswan_ir"]
 
 [tool.coverage.report]
 show_missing = true
@@ -57,7 +61,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/sentinelforge"]
+files = ["src/riswan_ir"]
 plugins = ["pydantic.mypy"]
 check_untyped_defs = true
 warn_unused_ignores = true

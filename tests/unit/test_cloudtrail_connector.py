@@ -4,10 +4,10 @@ from datetime import timedelta
 import pytest
 from botocore.stub import Stubber
 
-from sentinelforge.connectors.aws.cloudtrail import CloudTrailHistory
-from sentinelforge.connectors.aws.requests import RequestBudget
-from sentinelforge.connectors.base import CollectionFailure
-from sentinelforge.models.collection import CollectionRequest
+from riswan_ir.connectors.aws.cloudtrail import CloudTrailHistory
+from riswan_ir.connectors.aws.requests import RequestBudget
+from riswan_ir.connectors.base import CollectionFailure
+from riswan_ir.models.collection import CollectionRequest
 
 
 def test_pagination_retry_budget_and_scope(aws_config, aws_window, fake_aws_session, cloudtrail):

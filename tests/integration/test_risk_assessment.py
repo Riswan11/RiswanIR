@@ -1,6 +1,6 @@
 import json
 
-from sentinelforge.storage.sqlite import Store
+from riswan_ir.storage.sqlite import Store
 from tests.integration.test_temporal_correlation import ACCOUNT, BUCKET, ROOT, activity, scenario
 
 BASE = "/v1/investigations"
@@ -68,7 +68,7 @@ def test_persisted_risk_reassessment_preserves_original_and_replays(
 
     config = tmp_path / "risk-inventory.json"
     config.write_text(json.dumps({"business_impact": {BUCKET: 100}}), encoding="utf-8")
-    monkeypatch.setenv("SENTINELFORGE_RISK_INVENTORY", str(config))
+    monkeypatch.setenv("RISWAN_IR_RISK_INVENTORY", str(config))
     status, changed, _ = client(
         "POST",
         base + "/risk/reassess",
@@ -119,7 +119,7 @@ def test_revisions_keep_original_risk_and_invalidate_superseded_containment(clie
 
 
 def test_new_policy_is_versioned_and_archived_separately(client, monkeypatch, tmp_path):
-    from sentinelforge.risk.registry import default_policy
+    from riswan_ir.risk.registry import default_policy
 
     report = submit(client, scenario(10))
     original = assessment(client, report, "finding")
@@ -127,7 +127,7 @@ def test_new_policy_is_versioned_and_archived_separately(client, monkeypatch, tm
     policy = default_policy().model_dump(mode="json")
     version = {**policy, "version": "2.0.0", "severity_thresholds": [10, 20, 30, 40]}
     config.write_text(json.dumps([version, policy]), encoding="utf-8")
-    monkeypatch.setenv("SENTINELFORGE_RISK_POLICY", str(config))
+    monkeypatch.setenv("RISWAN_IR_RISK_POLICY", str(config))
     path = f"{BASE}/{report['id']}/risk"
     status, result, _ = client(
         "POST",

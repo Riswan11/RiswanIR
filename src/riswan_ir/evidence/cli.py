@@ -7,6 +7,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from ..core.config import database_path
 from ..core.errors import NotFoundError
 from ..models.chain_of_custody import EvidenceRetentionPolicy
 from ..storage.sqlite import Store
@@ -21,9 +22,7 @@ def write_export(path: Path, payload: dict[str, object]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--db", type=Path, default=Path(os.environ.get("SENTINELFORGE_DB", "sentinelforge.sqlite3"))
-    )
+    parser.add_argument("--db", type=Path, default=Path(database_path()))
     commands = parser.add_subparsers(dest="command", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("investigation_id")

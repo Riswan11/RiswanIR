@@ -1,6 +1,6 @@
-from sentinelforge.memory.baseline import evaluate
-from sentinelforge.memory.intelligence import compare
-from sentinelforge.memory.models import Feedback, MemoryPolicy, Observation, Profile
+from riswan_ir.memory.baseline import evaluate
+from riswan_ir.memory.intelligence import compare
+from riswan_ir.memory.models import Feedback, MemoryPolicy, Observation, Profile
 
 
 def observation(day, index, *, operation="GetObject", network="known", hour=3):

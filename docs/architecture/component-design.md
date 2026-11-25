@@ -1,6 +1,6 @@
 # Component design
 
-The [entry point](../../src/sentinelforge/__main__.py) constructs the SQLite store and injects it into the WSGI application. Checkout launchers remain available in [server.py](../../server.py) and [forge.py](../../forge.py).
+The [entry point](../../src/riswan_ir/__main__.py) constructs the SQLite store and injects it into the WSGI application. Checkout launchers remain available in [server.py](../../server.py) and [forge.py](../../forge.py).
 
 | Package | Responsibility | Internal dependencies |
 | --- | --- | --- |

@@ -1,7 +1,7 @@
 import json
 
-from sentinelforge.normalization.aws.cloudtrail import normalize
-from sentinelforge.normalization.aws.ocsf_mapper import REGISTRY, map_event
+from riswan_ir.normalization.aws.cloudtrail import normalize
+from riswan_ir.normalization.aws.ocsf_mapper import REGISTRY, map_event
 
 
 def test_invalid_extensions_cannot_echo_input(cloudtrail):

@@ -3,7 +3,7 @@
 Run the normal coverage gate from the project root.
 
 ```bash
-python -m pytest tests/ -v --cov=sentinelforge --cov-report=term-missing --cov-fail-under=90
+python -m pytest tests/ -v --cov=riswan_ir --cov-report=term-missing --cov-fail-under=90
 ```
 
 The catalog test covers a positive, failed operation, and missing-context or missing-source scenario for every rule. Tests also cover trusted policy ingestion, prior relationships, count windows, time-limited exceptions, condition typing, suppression, SQLite replay, and the YAML trust boundary.
