@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SentinelForge</title>
+<style>
+  body { margin: 0; background: #111820; color: #edf3f8; font: 16px system-ui, sans-serif; }
+  main { max-width: 1100px; margin: auto; padding: 32px 20px; }
+  header { border-bottom: 1px solid #354452; margin-bottom: 24px; }
+  h1 { margin-bottom: 4px; } h2 { margin-top: 0; }
+  p, label { color: #bdcbd8; } label { display: block; margin: 12px 0; }
+  .layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 20px; }
+  section { background: #19242e; border: 1px solid #354452; border-radius: 12px; padding: 20px; }
+  input, textarea, select, button { font: inherit; padding: 8px; border-radius: 6px; border: 1px solid #5c7386; }
+  input, textarea, select { width: 100%; box-sizing: border-box; color: inherit; background: #111820; margin-top: 4px; }
+  button { background: #a2ecd5; color: #13251f; cursor: pointer; margin: 3px 4px 3px 0; }
+  button.secondary { color: #edf3f8; background: #283848; }
+  li { margin: 6px 0; overflow-wrap: anywhere; } pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #status { min-height: 22px; color: #ffce8d; }
+  @media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<header><h1>SentinelForge</h1><p>CloudTrail investigation workspace</p></header>
+<div class="layout">
+<section>
+  <h2>New investigation</h2>
+  <form id="intake">
+    <label>Finding title<input name="title" required maxlength="300"></label>
+    <label>Principal ARN<input name="principal" required maxlength="300"></label>
+    <label>CloudTrail JSON<textarea name="records" required rows="8" placeholder='{"Records": […]}'></textarea></label>
+    <button>Investigate</button><button type="button" id="sample" class="secondary">Load sample</button>
+  </form>
+  <h3>Recent investigations</h3><div id="history"></div>
+</section>
+<section><h2 id="report-title">Investigation report</h2>
+<p id="status" role="status"></p>
+<div id="report"></div>
+<form id="review" hidden>
+  <h3>Analyst review</h3>
+  <label>Reviewer<input name="reviewer" required maxlength="100"></label>
+  <label>Disposition<select name="disposition"><option>inconclusive</option><option>benign</option><option>suspicious</option><option>confirmed</option></select></label>
+  <label>Notes<textarea name="notes" maxlength="2000"></textarea></label>
+  <button>Save review</button><span id="decisions"></span>
+</form></section>
+</div></main>
+<script>
+const byId = (id) => document.getElementById(id);
+const intake = byId("intake"), review = byId("review");
+const base = "/v1/investigations";
+let current;
+async function api(path, body) {
+  const response = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error);
+  return data;
+}
+function run(operation) {
+  return async (event) => {
+    event?.preventDefault();
+    byId("status").textContent = "";
+    try { await operation(); }
+    catch (error) { byId("status").textContent = error.message; }
+  };
+}
+function add(parent, tag, value) {
+  const element = document.createElement(tag);
+  element.textContent = value;
+  parent.append(element);
+  return element;
+}
+function list(parent, title, rows) {
+  add(parent, "h3", title);
+  if (!rows.length) { add(parent, "p", "No entries."); return; }
+  const items = add(parent, "ul", "");
+  for (const row of rows) add(items, "li", row);
+}
+function render(report) {
+  current = report;
+  const panel = byId("report");
+  panel.replaceChildren();
+  byId("report-title").textContent = report.title;
+  add(panel, "p", report.principal);
+  const risk = report.assessment;
+  add(panel, "h3", `${risk.severity.toUpperCase()} · ${risk.score}/${risk.score_max} triage score`);
+  list(panel, "Evidence-backed findings", risk.claims.map(claim =>
+    `${claim.summary} [${claim.evidence_ids.join(", ")}]${claim.possible_attack_technique ? " · Possible " + claim.possible_attack_technique : ""}`));
+  list(panel, "Timeline", report.evidence.map(item =>
+    `${item.observed_at} · ${item.event} · ${item.target ?? "Target unavailable"} [${item.id}]`));
+  list(panel, "Open questions", risk.open_questions);
+  list(panel, "Related reviewed investigations", report.similar_investigations.map(item =>
+    `${item.title} · ${item.disposition} · ${item.shared_events.join(", ")}`));
+  list(panel, "Review history", report.reviews.map(item =>
+    `${item.disposition} · ${item.reviewer} · ${item.notes}`));
+  const details = add(panel, "details", "");
+  add(details, "summary", "Evidence and graph JSON");
+  add(details, "pre", JSON.stringify({evidence: report.evidence, graph: report.graph}, null, 2));
+  review.hidden = false;
+  const decisions = byId("decisions");
+  decisions.replaceChildren();
+  if (report.action) {
+    add(panel, "h3", "Advisory action");
+    add(panel, "p", report.action.summary);
+    if (report.decision) add(panel, "p", `${report.decision.decision} · ${report.decision.reviewer}`);
+    else for (const decision of ["approve", "reject"]) {
+      const button = add(decisions, "button", decision === "approve" ? "Approve advisory" : "Reject advisory");
+      button.type = "button";
+      button.onclick = run(async () => {
+        if (!review.elements.reviewer.reportValidity()) return;
+        render(await api(`${base}/${report.id}/actions/${report.action.id}/${decision}`, {
+          reviewer: review.elements.reviewer.value,
+        }));
+      });
+    }
+  }
+}
+async function refresh() {
+  const history = byId("history");
+  history.replaceChildren();
+  for (const item of await api(base)) {
+    const button = add(history, "button", item.title);
+    button.className = "secondary";
+    button.onclick = run(async () => render(await api(`${base}/${item.id}`)));
+  }
+}
+intake.onsubmit = run(async () => {
+  const body = Object.fromEntries(new FormData(intake));
+  const input = JSON.parse(body.records);
+  body.records = Array.isArray(input) ? input : input?.Records;
+  render(await api(base, body));
+  await refresh();
+});
+review.onsubmit = run(async () => {
+  render(await api(`${base}/${current.id}/feedback`, Object.fromEntries(new FormData(review))));
+  byId("status").textContent = "Review saved.";
+});
+byId("sample").onclick = () => {
+  const arn = "arn:aws:iam::123456789012:user/build-service";
+  intake.elements.title.value = "Unexpected build service activity";
+  intake.elements.principal.value = arn;
+  intake.elements.records.value = JSON.stringify({Records: [
+    ["AssumeRole", {roleArn: "arn:aws:iam::123456789012:role/ExampleRole"}],
+    ["GetObject", {bucketName: "example-finance-bucket"}],
+    ["CreateAccessKey", {userName: "build-service"}],
+  ].map(([eventName, requestParameters], index) => ({
+    eventID: `sample-${index + 1}`, eventTime: `2025-01-01T03:1${index}:00Z`,
+    eventName, requestParameters, userIdentity: {arn},
+  }))}, null, 2);
+};
+run(refresh)();
+</script>
+</body>
+</html>
