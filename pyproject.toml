@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Local CloudTrail investigation workspace"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = ["pydantic>=2.11,<3"]
 
 [project.scripts]
 sentinelforge = "sentinelforge.__main__:main"

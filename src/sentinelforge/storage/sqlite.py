@@ -1,14 +1,19 @@
 """Persist investigations, analyst feedback, and action decisions in SQLite."""
 
-import json
 import sqlite3
 from contextlib import closing, contextmanager
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from ..core.errors import NotFoundError
-from ..core.fields import now, required
+from ..core.fields import now
 from ..investigation.analysis import analyze
 from ..memory.similarity import similar_investigations
+from ..models import (
+    ActionDecision, AnalystFeedback, AnalystReview, Disposition,
+    InvestigationReport, InvestigationRequest, InvestigationSummary,
+)
 
 
 SCHEMA = """
@@ -27,6 +32,13 @@ CREATE TABLE IF NOT EXISTS decisions (
 """
 
 
+def deserialize_report(payload: str) -> InvestigationReport:
+    try:
+        return InvestigationReport.model_validate_json(payload)
+    except ValidationError as exc:
+        raise RuntimeError("Invalid stored investigation report.") from exc
+
+
 class Store:
     def __init__(self, path):
         self.path = path
@@ -40,62 +52,57 @@ class Store:
             db.execute("PRAGMA foreign_keys = ON")
             yield db
 
-    def create(self, data):
-        report = {"id": uuid4().hex, "created_at": now(), **analyze(data)}
+    def create(self, request: InvestigationRequest) -> InvestigationReport:
+        result = analyze(request)
+        report = InvestigationReport(id=uuid4().hex, created_at=now(), **dict(result))
         with self.connect() as db:
             db.execute("INSERT INTO investigations VALUES (?, ?, ?)",
-                       (report["id"], report["created_at"], json.dumps(report)))
-        return self.get(report["id"])
+                       (report.id, report.created_at, report.model_dump_json(by_alias=True, exclude_unset=True)))
+        return self.get(report.id)
 
-    def get(self, investigation_id):
+    def get(self, investigation_id: str) -> InvestigationReport:
         with self.connect() as db:
             row = db.execute("SELECT report FROM investigations WHERE id = ?", (investigation_id,)).fetchone()
             if row is None:
                 raise NotFoundError("Investigation not found.")
-            report = json.loads(row["report"])
-            report["reviews"] = [dict(item) for item in db.execute(
+            report = deserialize_report(row["report"])
+            report.reviews = [AnalystReview.model_validate(dict(item)) for item in db.execute(
                 "SELECT reviewer, disposition, notes, created_at FROM reviews WHERE investigation_id = ? ORDER BY id",
                 (investigation_id,))]
             decision = db.execute(
                 "SELECT reviewer, decision, created_at FROM decisions WHERE investigation_id = ?",
                 (investigation_id,)).fetchone()
-            report["decision"] = dict(decision) if decision else None
+            report.decision = ActionDecision.model_validate(dict(decision)) if decision else None
             history = db.execute("""
                 SELECT i.report, r.disposition FROM investigations i JOIN reviews r
                     ON r.id = (SELECT max(id) FROM reviews WHERE investigation_id = i.id)
                 WHERE i.id <> ? ORDER BY r.id DESC LIMIT 100
             """, (investigation_id,))
-            report["similar_investigations"] = similar_investigations(report, history)
+            report.similar_investigations = similar_investigations(
+                report, ((deserialize_report(item["report"]), Disposition(item["disposition"])) for item in history)
+            )
         return report
 
-    def list(self):
+    def list(self) -> list[InvestigationSummary]:
         with self.connect() as db:
-            reports = [json.loads(row["report"]) for row in db.execute(
+            return [InvestigationSummary.model_validate_json(row["report"]) for row in db.execute(
                 "SELECT report FROM investigations ORDER BY created_at DESC LIMIT 50")]
-        return [{key: report[key] for key in ("id", "title", "created_at")} for report in reports]
 
-    def feedback(self, investigation_id, data):
+    def feedback(self, investigation_id: str, feedback: AnalystFeedback) -> InvestigationReport:
         self.get(investigation_id)
-        reviewer = required(data, "reviewer", 100)
-        disposition = required(data, "disposition")
-        if disposition not in {"benign", "suspicious", "confirmed", "inconclusive"}:
-            raise ValueError("Unknown disposition.")
-        notes = data.get("notes", "")
-        if not isinstance(notes, str) or len(notes) > 2000:
-            raise ValueError("Notes must be text with at most 2,000 characters.")
+        review = AnalystReview(**dict(feedback), created_at=now())
         with self.connect() as db:
             db.execute("INSERT INTO reviews (investigation_id, reviewer, disposition, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-                       (investigation_id, reviewer, disposition, notes, now()))
+                       (investigation_id, review.reviewer, review.disposition, review.notes, review.created_at))
         return self.get(investigation_id)
 
-    def decide(self, investigation_id, action_id, decision, data):
-        action = self.get(investigation_id)["action"]
-        if action is None or action["id"] != action_id:
+    def decide(self, investigation_id: str, action_id: str, decision: ActionDecision) -> InvestigationReport:
+        action = self.get(investigation_id).action
+        if action is None or action.id != action_id:
             raise NotFoundError("Action not found.")
-        reviewer = required(data, "reviewer", 100)
         with self.connect() as db:
             result = db.execute("INSERT INTO decisions VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                                (investigation_id, reviewer, decision, now()))
+                                (investigation_id, decision.reviewer, decision.decision, decision.created_at))
             if result.rowcount != 1:
                 raise FileExistsError("This action already has a decision.")
         return self.get(investigation_id)

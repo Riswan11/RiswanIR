@@ -3,7 +3,12 @@
 import hashlib
 import json
 
+from ..models import Evidence, NormalizedEvent
 
-def integrity_hash(item):
-    canonical = json.dumps(item, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+def seal_evidence(event: NormalizedEvent, parent_id: str | None) -> Evidence:
+    fields = event.payload()
+    fields["query"] = "Issued access key match" if parent_id else "Exact principal ARN match"
+    fields["linked_from_evidence_id"] = parent_id
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    return Evidence(**fields, integrity_hash="sha256:" + hashlib.sha256(canonical.encode()).hexdigest())

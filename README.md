@@ -7,6 +7,7 @@ SentinelForge is a local analyst workspace for investigating suspicious AWS acti
 Requires Python 3.11 or newer. From the repository root, run:
 
 ```sh
+python -m pip install .
 python server.py
 ```
 
@@ -16,7 +17,7 @@ For your own data, paste a CloudTrail log with a top-level `Records` array, a `l
 
 The local SQLite database defaults to `sentinelforge.sqlite3`. Set `SENTINELFORGE_DB` to choose a different file or `SENTINELFORGE_PORT` to change the port.
 
-To install the package, run `python -m pip install .` and start it with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
+After installation, you can also start the app with `sentinelforge` or `python -m sentinelforge`. See the [architecture guide](docs/architecture/README.md) for the package layout.
 
 ## Investigation workflow
 
@@ -37,7 +38,7 @@ To install the package, run `python -m pip install .` and start it with `sentine
 | POST | `/v1/investigations/{id}/actions/{action_id}/approve` | Record approval with a reviewer name |
 | POST | `/v1/investigations/{id}/actions/{action_id}/reject` | Record rejection with a reviewer name |
 
-This release is for single-user local testing. It uses the Python standard library and SQLite, accepts exported records, and records advisory decisions only. Live AWS collection, cloud remediation, authenticated multi-user access, and model-based planning are outside this release.
+This release is for single-user local testing. It uses Pydantic for validation and SQLite for persistence, accepts exported records, and records advisory decisions only. Live AWS collection, cloud remediation, authenticated multi-user access, and model-based planning are outside this release.
 
 ## Tests
 

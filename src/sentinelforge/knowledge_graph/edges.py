@@ -3,12 +3,16 @@
 
 
 
-def build_graph(evidence):
+from ..models import Evidence, GraphEdge, Relationship
+
+
+def build_graph(evidence: list[Evidence]) -> list[GraphEdge]:
     return (
-        [{"from": item["principal"], "relationship": "CALLED", "to": item["id"]}
-         for item in evidence if item["principal"]]
-        + [{"from": item["id"], "relationship": "TARGETED", "to": item["target"]}
-           for item in evidence if item["target"]]
-        + [{"from": item["linked_from_evidence_id"], "relationship": "ISSUED_CREDENTIAL_USED_IN", "to": item["id"]}
-           for item in evidence if item["linked_from_evidence_id"]]
+        [GraphEdge(source=item.principal, relationship=Relationship.CALLED, target=item.id)
+         for item in evidence if item.principal]
+        + [GraphEdge(source=item.id, relationship=Relationship.TARGETED, target=item.target)
+           for item in evidence if item.target]
+        + [GraphEdge(source=item.linked_from_evidence_id,
+                     relationship=Relationship.ISSUED_CREDENTIAL_USED_IN, target=item.id)
+           for item in evidence if item.linked_from_evidence_id]
     )

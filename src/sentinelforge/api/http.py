@@ -8,6 +8,8 @@ from importlib.resources import files
 
 from .. import frontend
 from ..core.errors import NotFoundError
+from ..core.fields import now
+from ..models import ActionDecision, AnalystFeedback, InvestigationRequest
 from ..security.host import is_local_host
 
 
@@ -66,19 +68,23 @@ class Application:
         method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
         if path == "/v1/investigations":
             if method == "GET":
-                return 200, self.store.list()
+                return 200, [summary.payload() for summary in self.store.list()]
             if method == "POST":
-                return 201, self.store.create(self.body(env))
+                request = InvestigationRequest.model_validate(self.body(env))
+                return 201, self.store.create(request).payload()
         match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
         if match:
             investigation_id, suffix = match.groups()
             if method == "GET" and suffix in {"", "/evidence", "/graph"}:
-                report = self.store.get(investigation_id)
+                report = self.store.get(investigation_id).payload()
                 return 200, report[suffix[1:]] if suffix else report
             if method == "POST" and suffix == "/feedback":
-                return 201, self.store.feedback(investigation_id, self.body(env))
+                feedback = AnalystFeedback.model_validate(self.body(env))
+                return 201, self.store.feedback(investigation_id, feedback).payload()
             action = re.fullmatch(r"/actions/([a-z-]+)/(approve|reject)", suffix)
             if method == "POST" and action:
                 action_id, decision = action.groups()
-                return 201, self.store.decide(investigation_id, action_id, decision, self.body(env))
+                body = self.body(env)
+                approval = ActionDecision(reviewer=body.get("reviewer"), decision=decision, created_at=now())
+                return 201, self.store.decide(investigation_id, action_id, approval).payload()
         raise NotFoundError("Route not found.")

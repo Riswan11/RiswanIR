@@ -5,10 +5,13 @@ from datetime import datetime, timezone
 from ..core.fields import mapping, required, text_field, utc_timestamp
 
 
+from ..models import CloudTrailRecord, NormalizedEvent
+
+
 ROLE_CALLS = {"AssumeRole", "AssumeRoleWithSAML", "AssumeRoleWithWebIdentity"}
 
 
-def normalize(event):
+def normalize(event: CloudTrailRecord) -> NormalizedEvent:
     if not isinstance(event, dict):
         raise ValueError("Each CloudTrail record must be an object.")
     identity = mapping(event, "userIdentity")
@@ -22,25 +25,25 @@ def normalize(event):
         "CreateAccessKey": "userName",
         "AttachUserPolicy": "policyArn",
     }
-    return {
-        "id": event_id,
-        "source": "aws.cloudtrail",
-        "observed_at": timestamp.isoformat(timespec="microseconds"),
-        "event": "AssumeRole" if name in ROLE_CALLS else name,
-        "operation": name,
-        "principal": text_field(identity, "arn"),
-        "target": text_field(params, allowed_targets.get(name)),
-        "source_ip": text_field(event, "sourceIPAddress"),
-        "user_agent": text_field(event, "userAgent", 1024),
-        "region": text_field(event, "awsRegion"),
-        "account_id": text_field(identity, "accountId"),
-        "recipient_account_id": text_field(event, "recipientAccountId"),
-    }
+    return NormalizedEvent(
+        id=event_id,
+        source="aws.cloudtrail",
+        observed_at=timestamp.isoformat(timespec="microseconds"),
+        event="AssumeRole" if name in ROLE_CALLS else name,
+        operation=name,
+        principal=text_field(identity, "arn"),
+        target=text_field(params, allowed_targets.get(name)),
+        source_ip=text_field(event, "sourceIPAddress"),
+        user_agent=text_field(event, "userAgent", 1024),
+        region=text_field(event, "awsRegion"),
+        account_id=text_field(identity, "accountId"),
+        recipient_account_id=text_field(event, "recipientAccountId"),
+    )
 
 
-def issued_credential(event, item):
+def issued_credential(event: CloudTrailRecord, item: NormalizedEvent) -> tuple[str | None, str | None, datetime | None]:
     response = mapping(event, "responseElements")
-    if item["event"] == "AssumeRole" and event.get("eventSource", "sts.amazonaws.com") == "sts.amazonaws.com":
+    if item.event == "AssumeRole" and event.get("eventSource", "sts.amazonaws.com") == "sts.amazonaws.com":
         credentials = mapping(response, "credentials")
         expiry = text_field(credentials, "expiration")
         expires_at = None
@@ -54,6 +57,6 @@ def issued_credential(event, item):
                     pass
         return (text_field(credentials, "accessKeyId"),
                 text_field(mapping(response, "assumedRoleUser"), "arn"), expires_at)
-    if item["event"] == "CreateAccessKey" and event.get("eventSource", "iam.amazonaws.com") == "iam.amazonaws.com":
+    if item.event == "CreateAccessKey" and event.get("eventSource", "iam.amazonaws.com") == "iam.amazonaws.com":
         return text_field(mapping(response, "accessKey"), "accessKeyId"), None, None
     return None, None, None

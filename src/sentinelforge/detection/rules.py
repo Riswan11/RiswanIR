@@ -3,6 +3,9 @@
 
 
 
+from ..models import Evidence, Finding, RiskAssessment, Severity
+
+
 RULES = (
     ("role-assumption", 20, "Role assumption observed", "T1078", ("AssumeRole",), 1),
     ("object-read", 20, "Successful object read recorded", None, ("GetObject",), 1),
@@ -14,48 +17,48 @@ RULES = (
 )
 
 
-def rule_evidence(evidence, events, minimum):
+def rule_evidence(evidence: list[Evidence], events: tuple[str, ...], minimum: int) -> list[str]:
     if len(events) == 1:
-        ids = [item["id"] for item in evidence if item["event"] == events[0]]
+        ids = [item.id for item in evidence if item.event == events[0]]
         return ids if len(ids) >= minimum else []
-    by_id = {item["id"]: item for item in evidence}
+    by_id = {item.id: item for item in evidence}
     for item in evidence:
-        if item["event"] != events[-1]:
+        if item.event != events[-1]:
             continue
-        matched = [item["id"]]
-        ancestor = item["linked_from_evidence_id"]
+        matched = [item.id]
+        ancestor = item.linked_from_evidence_id
         for event in reversed(events[:-1]):
-            while ancestor and by_id[ancestor]["event"] != event:
-                ancestor = by_id[ancestor]["linked_from_evidence_id"]
+            while ancestor and by_id[ancestor].event != event:
+                ancestor = by_id[ancestor].linked_from_evidence_id
             if not ancestor:
                 break
             matched.append(ancestor)
-            ancestor = by_id[ancestor]["linked_from_evidence_id"]
+            ancestor = by_id[ancestor].linked_from_evidence_id
         if len(matched) == len(events):
             return list(reversed(matched))
     return []
 
 
-def assess(evidence):
+def assess(evidence: list[Evidence]) -> RiskAssessment:
     claims = []
     score = 0
     for rule_id, weight, summary, technique, events, minimum in RULES:
         event_ids = rule_evidence(evidence, events, minimum)
         if event_ids:
             score += weight
-            claims.append({"rule_id": rule_id, "summary": summary, "evidence_ids": event_ids,
-                           "possible_attack_technique": technique})
-    severity = "high" if score >= 50 else "medium" if score >= 25 else "low" if score else "unrated"
-    targets = sorted({item["target"] for item in evidence if item["target"]})
-    return {
-        "severity": severity,
-        "score": score,
-        "score_max": sum(rule[1] for rule in RULES),
-        "claims": claims,
-        "open_questions": [
+            claims.append(Finding(rule_id=rule_id, summary=summary, evidence_ids=event_ids,
+                                  possible_attack_technique=technique))
+    severity = Severity.HIGH if score >= 50 else Severity.MEDIUM if score >= 25 else Severity.LOW if score else Severity.UNRATED
+    targets = sorted({item.target for item in evidence if item.target})
+    return RiskAssessment(
+        severity=severity,
+        score=score,
+        score_max=sum(rule[1] for rule in RULES),
+        claims=claims,
+        open_questions=[
             "Was the activity authorized?",
             "What happened outside the supplied records?",
             "Were any credential identifiers or issuance events missing from the export?",
         ],
-        "observed_targets": targets,
-    }
+        observed_targets=targets,
+    )

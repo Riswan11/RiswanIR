@@ -58,7 +58,7 @@ class InvestigationWorkflow(unittest.TestCase):
         action = path + "/actions/review-access-key"
         self.assertEqual(self.request("POST", action + "/approve", {"reviewer": "Analyst"})[0], 201)
         self.assertEqual(self.request("POST", action + "/reject", {"reviewer": "Analyst"})[0], 409)
-        self.assertEqual(Store(self.path).get(report["id"])["decision"]["decision"], "approve")
+        self.assertEqual(Store(self.path).get(report["id"]).decision.decision, "approve")
         next_report = self.request("POST", base, self.finding)[1]
         self.assertEqual(next_report["similar_investigations"][0]["disposition"], "confirmed")
 
