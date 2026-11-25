@@ -124,3 +124,14 @@ Production identity, authorization, and tenant-aware persistence are planned.
 | Disclosure | Tokens leak through logs, SQLite or browser-accessible state | Opaque session digest, secure cookies, query-free WSGI logging, generic errors, no stored refresh tokens | Configure equivalent behavior at the HTTPS edge. |
 | Denial of service | Credential stuffing, callback floods or unknown key floods | Provider-hosted credentials, bounded local request rate and attempts, and JWKS refresh limits | Provider and edge rate limits must be configured in deployment. |
 | Elevation of privilege | Actor accesses investigations without tenant authorization, or enables development in production | Separate modes, status checks, isolated identity database, and deny-by-default product routes | Tasks 4.4 and 4.5 will add authorization and membership. |
+
+## Authorization threats
+
+| STRIDE | Scenario | Likelihood / impact | Current control | Residual risk and next step |
+| --- | --- | --- | --- | --- |
+| Spoofing | Forged roles or a confused deputy act under another identity | Medium / High | Bound verified principal and matching actor context | Trusted adapter errors could still bind the wrong context. Verify live membership and resource resolution together. |
+| Tampering | Policy mutation, scope tampering or stale grants bypass restrictions | Medium / High | Typed policy, trusted snapshot interface, no permission cache | In-flight requests can survive revocation. Add transactional checks for sensitive writes. |
+| Repudiation | An actor denies approving their own proposal | Medium / High | Separate proposer and approver identities, MFA and decision audit | Durable authenticated approval writes still need integration. |
+| Information disclosure | Object enumeration, cross-tenant reads or bulk export | High / High | Resource grants, tenant match, indistinguishable object denials and constrained summary queries | Aggregations and export remain closed in the scoped adapter until selective projections are available. |
+| Denial of service | Policy and audit storage are overloaded | Medium / Medium | Evaluation and audit failures deny protected operations | Collection evaluation and audit writes can be expensive. Add bounded indexed policy queries before production. |
+| Elevation of privilege | An administrator over-delegates or an agent inherits human tool access | Medium / High | Delegation and execution disabled, separate workload identities, exact permission checks | Transactional delegation and tool enforcement remain open. |

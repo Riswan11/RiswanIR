@@ -8,6 +8,8 @@ from importlib.resources import files
 from urllib.parse import parse_qs
 from uuid import UUID
 
+from riswan_platform.authorization import Permission, ScopeType
+from riswan_platform.authorization.enforcement import AccessDenied, Enforcement
 from riswan_platform.core.context import bind_context, require_context
 from riswan_platform.core.contracts import ContextProvider, ProductModule
 from riswan_platform.core.exceptions import ContextRequiredError
@@ -46,12 +48,14 @@ class Application:
         tenant_id: UUID | None = None,
         product: ProductModule | None = None,
         dispatcher: EventDispatcher | None = None,
+        enforcement: Enforcement | None = None,
     ):
         self.store = store
         self._context_provider = context_provider
         self._tenant_id = tenant_id
         self._product = product
         self._dispatcher = dispatcher
+        self._enforcement = enforcement
 
     def __call__(self, env, start_response):
         content_type = "application/json"
@@ -82,6 +86,8 @@ class Application:
                         raise ContextRequiredError("Invalid application scope.")
                     status, result = self.route(env)
             body = result if isinstance(result, bytes) else json.dumps(result).encode()
+        except AccessDenied:
+            status, body = 404, b'{"error":"Route not found."}'
         except ContextRequiredError:
             status, body = 403, b'{"error":"Trusted execution context is required."}'
         except (ValueError, RecursionError) as exc:
@@ -147,6 +153,8 @@ class Application:
         ):
             raise ContextRequiredError("Invalid application scope.")
         method, path = env["REQUEST_METHOD"], env["PATH_INFO"]
+        if self._enforcement is not None:
+            return self._authorized_route(method, path)
         if path == "/v1/memory/expire" and method == "POST":
             return 200, {"expired": self.store.memory_expire()}
         if path == "/v1/investigations":
@@ -231,3 +239,20 @@ class Application:
                 )
                 return 201, self.store.decide(investigation_id, action_id, approval).payload()
         raise NotFoundError("Route not found.")
+
+    def _authorized_route(self, method: str, path: str):
+        enforcement = self._enforcement
+        if enforcement is None:
+            raise AccessDenied
+        if path == "/v1/investigations" and method == "GET":
+            ids = enforcement.investigation_ids()
+            return 200, [summary.payload() for summary in self.store.list_scoped(ids)]
+        match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
+        if method != "GET" or match is None:
+            raise AccessDenied
+        case_id, suffix = match.groups()
+        enforcement.require(Permission.READ, ScopeType.INVESTIGATION, case_id)
+        if not suffix:
+            # The legacy full report embeds separately protected evidence and memory.
+            return 200, self.store.get_summary(case_id).payload()
+        raise AccessDenied

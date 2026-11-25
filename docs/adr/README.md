@@ -43,3 +43,15 @@ An ADR explains a significant decision and the trade-offs it accepts. Use the [t
 - [0032. Distinguish human and workload identities](0032-human-and-workload-identities.md)
 - [0033. Audit authentication without storing credentials](0033-authentication-audit.md)
 - [0034. Isolate workstation and OIDC environments](0034-identity-environment-isolation.md)
+
+## Authorization
+
+- [Centralized Authorization Architecture](0035-centralized-authorization.md)
+- [Hybrid RBAC and ABAC Model](0036-hybrid-rbac-abac.md)
+- [Permission Namespace and Product Ownership](0037-permission-namespace.md)
+- [Resource-Level Authorization](0038-resource-authorization.md)
+- [Tenant-Aware Policy Enforcement](0039-tenant-aware-policy.md)
+- [Policy Evaluation and Deny Precedence](0040-deny-precedence.md)
+- [Privilege Delegation and Separation of Duties](0041-separation-of-duties.md)
+- [Non-Human Identity Authorization](0042-workload-authorization.md)
+- [Authorization Auditing and Revocation](0043-authorization-audit-revocation.md)

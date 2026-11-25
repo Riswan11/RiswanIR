@@ -1,5 +1,6 @@
 """Persist investigations, analyst feedback, and action decisions in SQLite."""
 
+import json
 import logging
 import os
 import sqlite3
@@ -665,6 +666,15 @@ class Store:
             accounts.update((actor, owner))
         return sorted(accounts)
 
+    def list_scoped(self, ids: tuple[str, ...]) -> list[InvestigationSummary]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT report FROM investigations WHERE id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY created_at DESC, id DESC LIMIT 50",
+                (json.dumps(ids),),
+            )
+            return [InvestigationSummary.model_validate_json(row["report"]) for row in rows]
+
     def list(self) -> list[InvestigationSummary]:
         with self.connect() as db:
             return [
@@ -673,6 +683,15 @@ class Store:
                     "SELECT report FROM investigations ORDER BY created_at DESC LIMIT 50"
                 )
             ]
+
+    def get_summary(self, investigation_id: str) -> InvestigationSummary:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT report FROM investigations WHERE id = ?", (investigation_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("Route not found.")
+        return InvestigationSummary.model_validate_json(row["report"])
 
     def feedback(self, investigation_id: str, feedback: AnalystFeedback) -> InvestigationReport:
         self.get(investigation_id)

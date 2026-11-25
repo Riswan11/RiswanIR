@@ -116,3 +116,7 @@ See [brand and planned domain architecture](docs/architecture/brand-and-domains.
 See [platform architecture and product boundaries](docs/architecture/platform-boundaries.md).
 
 See [centralized authentication](docs/architecture/authentication.md) for OIDC configuration, identity endpoints, and the workstation boundary.
+
+## Authorization foundation
+
+[Authorization design, enforcement and revocation](docs/security/authorization.md)
