@@ -13,7 +13,7 @@ from riswan_platform.core.exceptions import ContextRequiredError
 from riswan_platform.data_protection import ProtectionDenied
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def postgres_pool():
     if os.getenv("RISWAN_POSTGRES_INTEGRATION") != "1":
         pytest.skip("Requires the disposable PostgreSQL integration service.")
@@ -26,6 +26,10 @@ def postgres_pool():
         admin.execute("GRANT CREATE ON DATABASE riswan TO riswan_migration")
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         migrate(owner)
+        migrate(owner)
+        assert owner.execute(
+            "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
+        ).fetchall() == [(1,), (2,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -96,3 +100,39 @@ def test_postgres_rls_pool_and_direct_sql(postgres_pool):
             objects.get(key(a))
     with pool.connection() as db:
         assert db.execute("SELECT count(*) FROM riswan_data.protected_objects").fetchone() == (0,)
+
+
+def test_postgres_case_ownership_scopes_directory_and_sql(postgres_pool):
+    from datetime import UTC, datetime
+
+    import psycopg
+
+    from riswan_app.postgres_case_ownership import PostgresCaseOwnership
+
+    directory = PostgresCaseOwnership(postgres_pool)
+    first, second, actor = uuid4(), uuid4(), uuid4()
+    case = uuid4().hex
+    utc = datetime.now(UTC)
+    owner = PlatformContext(first, str(actor), "human", "ir", "req", "corr")
+    with bind_context(owner):
+        directory.register(case, utc)
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            directory.register(case, utc)
+        assert directory.owned_investigations(first) == {case: actor}
+        with pytest.raises(ContextRequiredError):
+            directory.owned_investigations(second)
+    for tenant, product in ((second, "ir"), (first, "separate")):
+        target = PlatformContext(tenant, str(actor), "human", product, "req", "corr")
+        with bind_context(target):
+            assert directory.owned_investigations(tenant) == {}
+    with postgres_pool.connection() as db:
+        assert db.execute(
+            "SELECT count(*) FROM riswan_data.investigation_ownership"
+        ).fetchone() == (0,)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute(
+                "INSERT INTO riswan_data.investigation_ownership VALUES (%s, 'ir', %s, %s, %s)",
+                (first, uuid4().hex, actor, utc),
+            )
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("SELECT count(*) FROM riswan_data.schema_migrations")
