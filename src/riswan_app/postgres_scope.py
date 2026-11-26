@@ -9,7 +9,13 @@ from typing import Any
 from riswan_platform.core.context import PlatformContext, require_context
 from riswan_platform.data_protection import ProtectionDenied
 
-MIGRATIONS = ("0001_protected_objects.sql", "0002_case_ownership.sql", "0003_investigations.sql")
+MIGRATIONS = (
+    "0001_protected_objects.sql",
+    "0002_case_ownership.sql",
+    "0003_investigations.sql",
+    "0004_revisions.sql",
+    "0005_legal_holds.sql",
+)
 
 
 def migrate(connection: Any) -> None:

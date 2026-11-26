@@ -253,3 +253,30 @@ def test_case_hold_serializes_with_memory_removal(tmp_path, investigation_reques
             pending.result(timeout=5)
     with store.connect() as db:
         assert db.execute("SELECT count(*) FROM memory_tombstones").fetchone()[0] == 0
+
+
+def test_transient_compiler_is_request_local_and_closes_workspace(investigation_request):
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlite3 import ProgrammingError
+
+    compiler = Store(":memory:", hosted=True, transient=True)
+
+    def compile_case(fail):
+        actor = context()
+        connection = None
+        if fail:
+            with pytest.raises(RuntimeError), bind_context(actor), compiler.connect() as connection:
+                compiler.create_in_transaction(connection, investigation_request)
+                raise RuntimeError("abort")
+        else:
+            with bind_context(actor), compiler.connect() as connection:
+                assert connection.execute("PRAGMA temp_store").fetchone()[0] == 2
+                assert connection.execute("PRAGMA database_list").fetchone()[2] == ""
+                assert connection.execute("SELECT count(*) FROM investigations").fetchone()[0] == 0
+                case = compiler.create_in_transaction(connection, investigation_request)
+                assert connection.execute("SELECT id FROM investigations").fetchone()[0] == case
+        with pytest.raises(ProgrammingError):
+            connection.execute("SELECT 1")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(compile_case, [False, True]))

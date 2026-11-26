@@ -5,8 +5,11 @@ from dataclasses import replace
 from uuid import UUID
 
 from riswan_ir.api.http import Application
-from riswan_ir.models import InvestigationRequest, InvestigationSummary
+from riswan_ir.correlation.temporal.models import TemporalSnapshot
+from riswan_ir.knowledge_graph.models import SecurityGraph
+from riswan_ir.models import EvidenceSubmission, InvestigationRequest, InvestigationSummary
 from riswan_ir.product import IRProduct
+from riswan_ir.risk.models import RiskArchive
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.authorization import (
     AuthorizationRequest,
@@ -58,8 +61,6 @@ class IRResources:
         case = self._case(case_id)
         if kind == ScopeType.INVESTIGATION and not child:
             return case
-        if isinstance(self.store, PostgresCases):
-            return None
         if kind == ScopeType.EVIDENCE:
             if case_id not in self._evidence:
                 self._evidence[case_id] = {
@@ -74,7 +75,7 @@ class IRResources:
                     (case.scope, *case.parents),
                     tenant_shared=True,
                 )
-        if kind == ScopeType.RESPONSE:
+        if kind == ScopeType.RESPONSE and not isinstance(self.store, PostgresCases):
             action = self.store.get(case_id, related_ids=()).action
             if action is not None and action.id == child:
                 return Resource(
@@ -172,17 +173,118 @@ class HostedPostgresCases:
                 return 200, [
                     item.payload() for item in self.store.list_scoped(guard.investigation_ids())
                 ]
-        match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})", path)
-        if match is None or method not in {"GET", "PATCH"}:
+        match = re.fullmatch(r"/v1/investigations/([a-f0-9]{32})(.*)", path)
+        if match is None:
             return 501, {"error": "Operation unavailable in the PostgreSQL case preview."}
-        case_id = match[1]
-        guard.require(Permission.READ, ScopeType.INVESTIGATION, case_id)
-        if method == "PATCH":
-            guard.require(Permission.UPDATE, ScopeType.INVESTIGATION, case_id)
+        case_id, suffix = match.groups()
+        scope = Scope(ScopeType.INVESTIGATION, case_id)
+        guard.require(Permission.READ, scope.kind, scope.id)
+        if method == "PATCH" and not suffix:
+            guard.require(Permission.UPDATE, scope.kind, scope.id)
             return 200, self.store.update(
                 case_id, CaseUpdate.model_validate(Application.body(env))
             ).payload()
+        if method == "POST" and suffix.startswith("/legal-holds"):
+            return self._hold(env, case_id, suffix)
+        if method == "DELETE" and suffix == "/memory":
+            guard.require(Permission.MEMORY_MANAGE, scope.kind, scope.id)
+            self._evidence(guard, scope)
+            self.store.memory_remove(case_id)
+            return 204, None
+        if method == "POST" and suffix == "/revisions":
+            guard.require(Permission.UPDATE, scope.kind, scope.id)
+            self._evidence(guard, scope, raw=True)
+            self._evidence(guard, scope)
+            report = self.store.revise(
+                case_id, EvidenceSubmission.model_validate(Application.body(env))
+            )
+            return 201, {"id": report.id, "created_at": report.created_at}
+        if method != "GET" or suffix not in {
+            "",
+            "/evidence",
+            "/knowledge-graph",
+            "/temporal-correlation",
+            "/risk",
+        }:
+            return 501, {"error": "Operation unavailable in the PostgreSQL case preview."}
         report = self.store.get(case_id)
-        return 200, InvestigationSummary(
-            id=report.id, title=report.title, created_at=report.created_at
-        ).payload()
+        try:
+            self._evidence(guard, scope)
+        except AccessDenied:
+            if suffix:
+                raise
+            return 200, InvestigationSummary(
+                id=report.id, title=report.title, created_at=report.created_at
+            ).payload()
+        if suffix == "/evidence":
+            return 200, [item.payload() for item in report.evidence]
+        if suffix == "/knowledge-graph":
+            guard.require(Permission.GRAPH, scope.kind, scope.id)
+            self._evidence(guard, scope, raw=True)
+            rows = self.store.artifact(case_id, "security_graphs")
+            return 200, SecurityGraph.model_validate_json(rows[0]["snapshot"]).payload()
+        if suffix == "/temporal-correlation":
+            guard.require(Permission.CORRELATE, scope.kind, scope.id)
+            rows = self.store.artifact(case_id, "temporal_correlations")
+            return 200, TemporalSnapshot.model_validate_json(rows[0]["snapshot"]).result.payload()
+        if suffix == "/risk":
+            guard.require(Permission.RISK, scope.kind, scope.id)
+            self._evidence(guard, scope, raw=True)
+            if report.previous_investigation_id:
+                guard.require(Permission.READ, scope.kind, report.previous_investigation_id)
+            rows = self.store.artifact(case_id, "risk_assessments")
+            return 200, {
+                "assessments": [
+                    RiskArchive.model_validate_json(row["archive"]).assessment.payload()
+                    for row in rows
+                ]
+            }
+        result = report.payload()
+        for action, field in (
+            (Permission.GRAPH, "graph"),
+            (Permission.CORRELATE, "correlation"),
+            (Permission.EXPORT, "canonical_events"),
+            (Permission.DETECTION_READ, "detection"),
+        ):
+            try:
+                guard.require(action, scope.kind, scope.id)
+            except AccessDenied:
+                result.pop(field, None)
+        if report.previous_investigation_id:
+            try:
+                guard.require(Permission.READ, scope.kind, report.previous_investigation_id)
+            except AccessDenied:
+                result.pop("previous_investigation_id", None)
+        return 200, result
+
+    def _evidence(self, guard: Enforcement, scope: Scope, *, raw: bool = False) -> None:
+        guard.require(Permission.EVIDENCE, scope.kind, scope.id)
+        for item in self.store.evidence_ids(scope.id, raw=raw):
+            key = item if raw else f"normalized/{item}"
+            guard.require(
+                Permission.EVIDENCE, ScopeType.EVIDENCE, f"{scope.id}/{key}", parent=scope
+            )
+
+    def _hold(self, env, case: str, suffix: str):
+        from riswan_platform.identity.principal import require_principal
+
+        match = re.fullmatch(r"/legal-holds(?:/([a-f0-9-]{36})/release)?", suffix)
+        if match is None:
+            raise AccessDenied
+        context = require_context()
+        resource = Resource(
+            context.tenant_id, "platform", Scope(ScopeType.ORGANIZATION, str(context.tenant_id))
+        )
+        auth = AuthorizationRequest(
+            require_principal(),
+            replace(context, product_id="platform"),
+            Permission.LEGAL_HOLD,
+            resource,
+        )
+        if not self.tenancy.evaluator.evaluate(auth).allowed:
+            raise AccessDenied
+        reason = HoldReason.model_validate(Application.body(env)).reason
+        release = UUID(match[1]) if match[1] else None
+        return (200 if release else 201), self.store.change_legal_hold(
+            case, reason, release=release
+        ).model_dump(mode="json")

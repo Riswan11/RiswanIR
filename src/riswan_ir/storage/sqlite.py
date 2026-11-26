@@ -163,6 +163,19 @@ class Store:
                 self._initialize(db)
             yield db
 
+    def seed_transient_parent(self, db: sqlite3.Connection, parent: InvestigationReport) -> None:
+        if not self._transient:
+            raise ContextRequiredError("Parent seeding requires a transient workspace.")
+        context = require_context()
+        db.execute(
+            "INSERT INTO investigations VALUES (?, ?, ?)",
+            (parent.id, parent.created_at, parent.model_dump_json(by_alias=True)),
+        )
+        db.execute(
+            "INSERT INTO investigation_ownership VALUES (?, ?, ?)",
+            (parent.id, str(self._tenant()), context.actor_id),
+        )
+
     def _tenant(self) -> UUID:
         context = require_context()
         if context.product_id != "ir":

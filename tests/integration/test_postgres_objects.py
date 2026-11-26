@@ -29,7 +29,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -196,7 +196,44 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     assert send(endpoint, tenant=b, cookie=bob)[0] == 404
     assert send(endpoint, "PATCH", tenant=b, cookie=bob, payload={"title": "Denied"})[0] == 404
     assert send(base, tenant=b, cookie=bob) == (200, [])
-    assert send(endpoint + "/risk", tenant=a)[0] == 501
+    assert send(endpoint + "/memory", tenant=a)[0] == 501
+    assert send(endpoint + "/risk", tenant=a)[0] == 200
+    assert send(endpoint + "/knowledge-graph", tenant=a)[0] == 200
+    assert send(endpoint + "/temporal-correlation", tenant=a)[0] == 200
+    original_evidence = send(endpoint + "/evidence", tenant=a)[1]
+    assert original_evidence
+    assert send(endpoint + "/evidence", tenant=b, cookie=bob)[0] == 404
+    assert send(endpoint, tenant=a)[1]["evidence"] == original_evidence
+    status, hold = send(endpoint + "/legal-holds", "POST", tenant=a, payload={"reason": "Preserve"})
+    assert status == 201
+    restarted = identity_runtime.compose_identity(
+        path,
+        tmp_path / "identity.sqlite3",
+        tmp_path / "workstation.sqlite3",
+        control_db=tmp_path / "control.sqlite3",
+        postgres_case_pool=postgres_pool,
+    )
+    assert (
+        call(
+            restarted,
+            endpoint + "/memory",
+            "DELETE",
+            cookie=alice,
+            origin="https://app.example",
+            tenant=a,
+        )[0]
+        == 409
+    )
+    assert (
+        send(
+            endpoint + "/legal-holds/" + hold["id"] + "/release",
+            "POST",
+            tenant=a,
+            payload={"reason": "Released"},
+        )[0]
+        == 200
+    )
+    assert send(endpoint + "/memory", "DELETE", tenant=a)[0] == 204
     with postgres_pool.connection() as db:
         assert db.execute("SELECT count(*) FROM riswan_data.investigations").fetchone() == (0,)
         with db.transaction():
@@ -241,6 +278,21 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     with monkeypatch.context() as patches:
         patches.setattr(postgres_pool, "connection", unavailable)
         assert send(endpoint, tenant=a)[0] == 503
+    extra = {**request_payload["records"]["Records"][-1], "eventID": "revision-extra"}
+    status, revised = send(endpoint + "/revisions", "POST", tenant=a, payload={"records": [extra]})
+    assert status == 201
+    descendant = send(f"{base}/{revised['id']}", tenant=a)[1]
+    assert descendant["previous_investigation_id"] == case
+    assert send(endpoint + "/evidence", tenant=a)[1] == original_evidence
+    assert {(item["id"], item["integrity_hash"]) for item in original_evidence} <= {
+        (item["id"], item["integrity_hash"]) for item in descendant["evidence"]
+    }
+    with monkeypatch.context() as patches:
+        patches.setattr(hosted.store._directory, "insert", aborted)
+        assert (
+            send(endpoint + "/revisions", "POST", tenant=a, payload={"records": [extra]})[0] == 503
+        )
+    assert {item["id"] for item in send(base, tenant=a)[1]} == {case, revised["id"]}
     assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
         "control.sqlite3",
         "identity.sqlite3",
