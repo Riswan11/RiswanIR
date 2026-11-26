@@ -30,7 +30,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -206,6 +206,28 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     status, events = send(endpoint + "/events", tenant=a)
     assert status == 200 and events["events"]
     assert send(endpoint + "/events", tenant=b, cookie=bob)[0] == 404
+    assert send(endpoint + "/evidence/provenance", tenant=b, cookie=bob)[0] == 404
+    for suffix in ("/evidence/provenance", "/evidence/custody", "/findings"):
+        assert send(endpoint + suffix, tenant=a)[0] == 200
+    assert send(endpoint + "/evidence/verify", tenant=a)[1]["valid"]
+    code, _, page = call(
+        app,
+        endpoint + "/events",
+        cookie=alice,
+        tenant=a,
+        query="limit=1",
+    )
+    assert code == 200 and len(page["events"]) == 1 and page["next_offset"] == 1
+    event_type = page["events"][0]["type_uid"]
+    code, _, filtered = call(
+        app,
+        endpoint + "/events",
+        cookie=alice,
+        tenant=a,
+        query=f"type_uid={event_type}&start=2020-01-01T00%3A00%3A00Z",
+    )
+    assert code == 200 and filtered["events"]
+    assert all(item["type_uid"] == event_type for item in filtered["events"])
     assert send(endpoint + "/evidence", tenant=b, cookie=bob)[0] == 404
     assert send(endpoint, tenant=a)[1]["evidence"] == original_evidence
     status, hold = send(endpoint + "/legal-holds", "POST", tenant=a, payload={"reason": "Preserve"})
@@ -254,8 +276,25 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
                 "SELECT count(*) FROM riswan_data.investigation_events WHERE investigation_id = %s",
                 (case,),
             ).fetchone()[0] == len(events["events"])
-            assert row[1]["evidence_receipts"] and row[1]["security_graphs"]
-            assert row[1]["raw_evidence"] and row[1]["evidence_custody"]
+            assert row[1]["security_graphs"] and row[1]["security_data_digest"]
+            assert "raw_evidence" not in row[1] and "evidence_receipts" not in row[1]
+            for table in ("case_raw_evidence", "case_evidence_receipts", "case_custody"):
+                from psycopg import sql
+
+                assert db.execute(
+                    sql.SQL(
+                        "SELECT count(*) FROM riswan_data.{} WHERE investigation_id = %s"
+                    ).format(sql.Identifier(table)),
+                    (case,),
+                ).fetchone()[0]
+            db.execute("SET LOCAL enable_seqscan = off")
+            plan = db.execute(
+                """EXPLAIN SELECT event FROM riswan_data.investigation_events
+                   WHERE investigation_id = %s AND event #>> '{classification,type_uid}' = %s
+                   ORDER BY observed_at, ordinal LIMIT 50""",
+                (case, str(event_type)),
+            ).fetchall()
+            assert any("scoped_event_type_timeline" in row[0] for row in plan)
             with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
                 orphan = uuid4().hex
                 db.execute(
@@ -313,6 +352,31 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
             send(endpoint + "/revisions", "POST", tenant=a, payload={"records": [extra]})[0] == 503
         )
     assert {item["id"] for item in send(base, tenant=a)[1]} == {case, revised["id"]}
+    from riswan_app import postgres_security_data
+
+    append = postgres_security_data.append
+
+    def failed_dependent_write(db, scope, report, data):
+        append(db, scope, report, data)
+        raise psycopg.OperationalError("simulated failure after evidence insert")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(postgres_security_data, "append", failed_dependent_write)
+        assert send(base, "POST", tenant=a, payload=request_payload)[0] == 503
+    assert {item["id"] for item in send(base, tenant=a)[1]} == {case, revised["id"]}
+    with postgres_pool.connection() as db, db.transaction():
+        assert db.execute("SELECT count(*) FROM riswan_data.case_custody").fetchone() == (0,)
+        db.execute(
+            "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', 'ir', true)",
+            (a,),
+        )
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("DELETE FROM riswan_data.case_custody WHERE investigation_id = %s", (case,))
+        with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
+            db.execute(
+                "INSERT INTO riswan_data.case_evidence_receipts VALUES (%s, 'ir', %s, 999, 'wrong', 'fixture', '{}')",
+                (a, case),
+            )
     assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
         "control.sqlite3",
         "identity.sqlite3",

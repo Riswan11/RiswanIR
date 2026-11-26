@@ -44,3 +44,21 @@ The in-memory SQLite workspace is a transitional compiler. Each operation create
 ### A.4 initial security-data port
 
 New cases and revisions append canonical events to PostgreSQL rows with an ordinal and an immutable per-case event ID. The composite case foreign key and forced RLS preserve tenant and product scope. The case commit includes the event rows. The authorized events export reads them in original order and checks them against the immutable report snapshot. Preview cases created before the event-table migration can still export the canonical snapshot from PostgreSQL. Raw evidence, provenance and custody remain in the case snapshot pending independent repository ports.
+
+
+### A.4 security repository ownership
+
+| Artifact | PostgreSQL authority for new cases | Mutability and access |
+| --- | --- | --- |
+| Canonical events | investigation_events | Immutable by case and event ID. Timeline sorts by timestamp and ordinal. Authorized export compares events to the immutable report snapshot. |
+| Raw evidence | case_raw_evidence | Content-addressed within a case and scoped to the owning tenant and product. Stores the exact canonical JSON text. The preview has no plaintext raw-evidence HTTP route. |
+| Provenance and receipts | case_evidence_receipts | Immutable original receipt metadata. A composite FK requires the matching raw evidence within the same investigation and scope. Provider and external account fields remain independent of Riswan tenancy. |
+| Normalization mappings | case_evidence_transformations | Immutable per source event with a composite FK to the canonical row. |
+| Custody | case_custody | Ordered by sequence. Runtime grants permit reading and appending. Modification and deletion require a separate privileged path. The case digest and custody verifier detect inconsistent history. |
+| Findings | case_findings | Immutable detection and assessment snapshots. The authorized endpoint compares ordered records against the report snapshot. Rule identifiers, versions and evidence links are preserved in the existing models. |
+
+New cases and revisions commit all security-data rows with ownership and the report. The bundle holds the digest and remaining security-intelligence snapshots. Evidence/provenance/custody authority moves to the dedicated tables for new cases. Existing preview records without the digest use their original PostgreSQL snapshot. There is no persistent SQLite fallback or retrospective import in this slice.
+
+Timeline filters accept a UTC range, canonical type UID, canonical actor identity or resource name/ID, and bounded limit and offset. No time filter is needed for full canonical export. The index follows tenant, product, case, and timestamp ordering. The type-filtered index adds canonical type before time. CI exercises the type query with EXPLAIN and sequential scans disabled to confirm the index is usable for the small fixture. This is not a production performance benchmark.
+
+Hosted preview raw payloads temporarily reside in riswan_data.case_raw_evidence.payload as plaintext under forced RLS and the restricted runtime role. They must be migrated to protected object references during Checkpoint B. Do not send production customer data to this preview. Legacy PostgreSQL copies, WAL and backups require separate retention and removal procedures. Cloud evidence ingestion and broad retention or deletion functionality are outside this checkpoint.

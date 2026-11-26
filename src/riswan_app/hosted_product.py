@@ -1,7 +1,9 @@
 """Product ownership directory and authenticated route composition."""
 
+import json
 import re
 from dataclasses import replace
+from urllib.parse import parse_qsl
 from uuid import UUID
 
 from riswan_ir.api.http import Application
@@ -25,6 +27,7 @@ from riswan_platform.data_protection import HoldReason
 from riswan_platform.identity.models import VerifiedPrincipal
 
 from .postgres_cases import CaseUpdate, PostgresCases
+from .postgres_events import TimelineQuery
 from .tenancy import Tenancy
 
 
@@ -203,6 +206,10 @@ class HostedPostgresCases:
             "",
             "/evidence",
             "/events",
+            "/evidence/provenance",
+            "/evidence/custody",
+            "/evidence/verify",
+            "/findings",
             "/knowledge-graph",
             "/temporal-correlation",
             "/risk",
@@ -228,7 +235,34 @@ class HostedPostgresCases:
                     f"{case_id}/normalized/{event_id}",
                     parent=scope,
                 )
-            return 200, self.store.events(case_id)
+            raw_query = env.get("QUERY_STRING", "")
+            if not raw_query:
+                return 200, self.store.events(case_id)
+            if len(raw_query) > 2048:
+                raise ValueError("Invalid timeline query.")
+            pairs = parse_qsl(
+                raw_query, keep_blank_values=True, strict_parsing=True, max_num_fields=7
+            )
+            query = dict(pairs)
+            if len(pairs) != len(query):
+                raise ValueError("Duplicate timeline filter.")
+            return 200, self.store.timeline(case_id, TimelineQuery.model_validate(query))
+        if suffix == "/findings":
+            guard.require(Permission.DETECTION_READ, scope.kind, scope.id)
+            return 200, self.store.findings(case_id)
+        if suffix in {"/evidence/provenance", "/evidence/custody", "/evidence/verify"}:
+            self._evidence(guard, scope, raw=True)
+            if suffix == "/evidence/verify":
+                verification = self.store.verify(case_id)
+                return 200, {**verification.payload(), "valid": verification.valid}
+            if suffix == "/evidence/provenance":
+                return 200, [
+                    json.loads(row["provenance"])
+                    for row in self.store.artifact(case_id, "evidence_receipts")
+                ]
+            return 200, [
+                json.loads(row["entry"]) for row in self.store.artifact(case_id, "evidence_custody")
+            ]
         if suffix == "/knowledge-graph":
             guard.require(Permission.GRAPH, scope.kind, scope.id)
             self._evidence(guard, scope, raw=True)

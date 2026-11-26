@@ -23,7 +23,7 @@ from riswan_platform.core.exceptions import NotFoundError
 from riswan_platform.data_protection import LegalHold, Ownership, ProtectionDenied
 from riswan_security_data.provenance import EvidenceProvenance
 
-from . import postgres_events
+from . import postgres_events, postgres_security_data
 from .postgres_case_ownership import PostgresCaseOwnership
 from .postgres_scope import ScopedPostgres
 
@@ -73,6 +73,7 @@ class PostgresCases(CaseReader):
                 "investigation_hold_audit",
                 "investigation_memory_removals",
                 "investigation_events",
+                *postgres_security_data.TABLES,
             ),
         )
         self._directory = PostgresCaseOwnership(pool)
@@ -137,6 +138,8 @@ class PostgresCases(CaseReader):
                 ]
                 for table, query in ARTIFACT_QUERIES.items()
             }
+        security_data = {name: captured.pop(name) for name in postgres_security_data.ARTIFACTS}
+        bundle = {**captured, "security_data_digest": postgres_security_data.digest(security_data)}
         self._directory.insert(db, context, case, utc_timestamp(report.created_at))
         db.execute(
             """INSERT INTO riswan_data.investigations
@@ -147,11 +150,12 @@ class PostgresCases(CaseReader):
                 context.product_id,
                 case,
                 report.model_dump_json(by_alias=True, exclude_unset=True),
-                json.dumps(captured),
+                json.dumps(bundle),
                 parent.id if parent else None,
             ),
         )
         postgres_events.append(db, context, case, report.canonical_events or [])
+        postgres_security_data.append(db, context, report, security_data)
         return report
 
     @staticmethod
@@ -172,7 +176,13 @@ class PostgresCases(CaseReader):
         ).fetchone()
         if row is None:
             raise NotFoundError("Investigation not found.")
-        return InvestigationReport.model_validate_json(json.dumps(row[0])), row[1]
+        report = InvestigationReport.model_validate_json(json.dumps(row[0]))
+        artifacts = row[1]
+        if "security_data_digest" in artifacts:
+            artifacts.update(
+                postgres_security_data.read(db, case, artifacts["security_data_digest"])
+            )
+        return report, artifacts
 
     def artifact(self, case: str, name: str):
         with self._scope.transaction() as (db, _):
@@ -191,11 +201,49 @@ class PostgresCases(CaseReader):
         with self._scope.transaction() as (db, _):
             report, _ = self._bundle(db, case)
             stored = postgres_events.read(db, case)
-            if stored:
-                if stored != report.canonical_events:
+            if stored or self._native_security_data(db, case):
+                if stored != (report.canonical_events or []):
                     raise NotFoundError("Canonical event archive unavailable.")
                 report = report.model_copy(update={"canonical_events": stored})
             return export_events(report)
+
+    @staticmethod
+    def _native_security_data(db, case: str) -> bool:
+        return bool(
+            db.execute(
+                """SELECT artifacts ? 'security_data_digest' FROM riswan_data.investigations
+               WHERE investigation_id = %s""",
+                (case,),
+            ).fetchone()[0]
+        )
+
+    def findings(self, case: str):
+        with self._scope.transaction() as (db, _):
+            report, _ = self._bundle(db, case)
+            if self._native_security_data(db, case):
+                return postgres_security_data.findings(db, report)
+            return postgres_security_data.expected_findings(report)
+
+    def verify(self, case: str):
+        with self._scope.transaction() as (db, _):
+            report, artifacts = self._bundle(db, case)
+            with self._compiler.connect() as staging:
+                self._compiler.seed_transient_parent(staging, report)
+                self._restore(staging, artifacts)
+                return evidence_store.verify(staging, case, report)
+
+    def timeline(self, case: str, query):
+        with self._scope.transaction() as (db, _):
+            report, _ = self._bundle(db, case)
+            selected = postgres_events.timeline(db, case, query)
+            reference = {item.id: item for item in report.canonical_events or []}
+            if any(reference.get(item.id) != item for item in selected):
+                raise NotFoundError("Canonical event archive unavailable.")
+            count = query.limit
+            archived = report.model_copy(update={"canonical_events": selected[:count]})
+            result = export_events(archived)
+            result["next_offset"] = query.offset + count if len(selected) > count else None
+            return result
 
     def evidence_ids(self, case: str, *, raw: bool = False) -> tuple[str, ...]:
         with self._scope.transaction() as (db, _):

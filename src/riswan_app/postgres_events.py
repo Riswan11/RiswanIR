@@ -2,6 +2,8 @@
 
 import json
 
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
 from riswan_ir.core.fields import utc_timestamp
 from riswan_security_data.canonical_event import SecurityEvent
 
@@ -38,3 +40,50 @@ def read(db, case: str) -> list[SecurityEvent]:
             (case,),
         )
     ]
+
+
+class TimelineQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start: AwareDatetime | None = None
+    end: AwareDatetime | None = None
+    type_uid: int | None = Field(default=None, ge=0)
+    principal: str | None = Field(default=None, max_length=512)
+    resource: str | None = Field(default=None, max_length=512)
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0, le=100_000)
+
+
+TIMELINE_SQL = """
+SELECT event FROM riswan_data.investigation_events e
+WHERE investigation_id = %(case)s
+  AND (%(start)s::timestamptz IS NULL OR observed_at >= %(start)s::timestamptz)
+  AND (%(end)s::timestamptz IS NULL OR observed_at < %(end)s::timestamptz)
+  AND (%(type)s::text IS NULL OR event #>> '{classification,type_uid}' = %(type)s::text)
+  AND (%(principal)s::text IS NULL OR %(principal)s::text IN (
+        event #>> '{actor,user,uid}', event #>> '{actor,user,arn}'
+      ))
+  AND (%(resource)s::text IS NULL OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(COALESCE(event->'resources', '[]'::jsonb)) AS r
+        WHERE %(resource)s::text IN (r->>'uid', r->>'name')
+      ))
+ORDER BY observed_at, ordinal LIMIT %(limit)s OFFSET %(offset)s
+"""
+
+
+def timeline(db, case: str, query: TimelineQuery) -> list[SecurityEvent]:
+    if query.start and query.end and query.start >= query.end:
+        raise ValueError("Timeline start must precede end.")
+    rows = db.execute(
+        TIMELINE_SQL,
+        {
+            "case": case,
+            "start": query.start,
+            "end": query.end,
+            "type": query.type_uid,
+            "principal": query.principal,
+            "resource": query.resource,
+            "limit": query.limit + 1,
+            "offset": query.offset,
+        },
+    )
+    return [SecurityEvent.model_validate_json(json.dumps(row[0])) for row in rows]
