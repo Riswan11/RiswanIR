@@ -17,6 +17,7 @@ MIGRATIONS = (
     "0005_legal_holds.sql",
     "0006_canonical_events.sql",
     "0007_security_data.sql",
+    "0008_graph_snapshots.sql",
 )
 
 

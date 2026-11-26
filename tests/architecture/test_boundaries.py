@@ -156,6 +156,7 @@ def test_table_writes_stay_with_the_owners():
         "riswan_data.investigation_ownership": "riswan_app.postgres_case_ownership",
         "riswan_data.investigations": "riswan_app.postgres_cases",
         "riswan_data.investigation_events": "riswan_app.postgres_events",
+        "riswan_data.case_graph_snapshots": "riswan_app.postgres_graphs",
         "riswan_data.case_raw_evidence": "riswan_app.postgres_security_data",
         "riswan_data.case_evidence_receipts": "riswan_app.postgres_security_data",
         "riswan_data.case_evidence_transformations": "riswan_app.postgres_security_data",

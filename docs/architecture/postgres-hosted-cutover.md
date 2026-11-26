@@ -62,3 +62,8 @@ New cases and revisions commit all security-data rows with ownership and the rep
 Timeline filters accept a UTC range, canonical type UID, canonical actor identity or resource name/ID, and bounded limit and offset. No time filter is needed for full canonical export. The index follows tenant, product, case, and timestamp ordering. The type-filtered index adds canonical type before time. CI exercises the type query with EXPLAIN and sequential scans disabled to confirm that PostgreSQL can use indexed access for the small fixture. This is not a production performance benchmark.
 
 Hosted preview raw payloads temporarily reside in riswan_data.case_raw_evidence.payload as plaintext under forced RLS and the restricted runtime role. They must be migrated to protected object references during Checkpoint B. Do not send production customer data to this preview. Legacy PostgreSQL copies, WAL and backups require separate retention and removal procedures. Cloud evidence ingestion and broad retention or deletion functionality are outside this checkpoint.
+
+
+### A.5 initial graph port
+
+New cases and revisions store the immutable graph snapshot in case_graph_snapshots, protected by forced RLS and a same-scope case foreign key. The bundle retains its digest and the existing graph query service reads the dedicated snapshot. Earlier preview cases retain their original graph in PostgreSQL. Independent risk, temporal correlation and historical memory repositories remain open.

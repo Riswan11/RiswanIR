@@ -8,7 +8,7 @@ from uuid import UUID
 
 from riswan_ir.api.http import Application
 from riswan_ir.correlation.temporal.models import TemporalSnapshot
-from riswan_ir.knowledge_graph.models import SecurityGraph
+from riswan_ir.knowledge_graph.service import serve_graph
 from riswan_ir.models import EvidenceSubmission, InvestigationRequest, InvestigationSummary
 from riswan_ir.product import IRProduct
 from riswan_ir.risk.models import RiskArchive
@@ -202,18 +202,23 @@ class HostedPostgresCases:
                 case_id, EvidenceSubmission.model_validate(Application.body(env))
             )
             return 201, {"id": report.id, "created_at": report.created_at}
-        if method != "GET" or suffix not in {
-            "",
-            "/evidence",
-            "/events",
-            "/evidence/provenance",
-            "/evidence/custody",
-            "/evidence/verify",
-            "/findings",
-            "/knowledge-graph",
-            "/temporal-correlation",
-            "/risk",
-        }:
+        graph_route = suffix == "/knowledge-graph" or suffix.startswith("/knowledge-graph/")
+        if method != "GET" or (
+            not graph_route
+            and suffix
+            not in {
+                "",
+                "/evidence",
+                "/events",
+                "/evidence/provenance",
+                "/evidence/custody",
+                "/evidence/verify",
+                "/findings",
+                "/knowledge-graph",
+                "/temporal-correlation",
+                "/risk",
+            }
+        ):
             return 501, {"error": "Operation unavailable in the PostgreSQL case preview."}
         report = self.store.get(case_id)
         try:
@@ -263,11 +268,15 @@ class HostedPostgresCases:
             return 200, [
                 json.loads(row["entry"]) for row in self.store.artifact(case_id, "evidence_custody")
             ]
-        if suffix == "/knowledge-graph":
+        if graph_route:
             guard.require(Permission.GRAPH, scope.kind, scope.id)
             self._evidence(guard, scope, raw=True)
-            rows = self.store.artifact(case_id, "security_graphs")
-            return 200, SecurityGraph.model_validate_json(rows[0]["snapshot"]).payload()
+            return 200, serve_graph(
+                self.store,
+                case_id,
+                suffix.removeprefix("/knowledge-graph"),
+                env.get("QUERY_STRING", ""),
+            )
         if suffix == "/temporal-correlation":
             guard.require(Permission.CORRELATE, scope.kind, scope.id)
             rows = self.store.artifact(case_id, "temporal_correlations")

@@ -21,9 +21,10 @@ from riswan_ir.storage import evidence_store
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.core.exceptions import NotFoundError
 from riswan_platform.data_protection import LegalHold, Ownership, ProtectionDenied
+from riswan_security_data.integrity import sha256
 from riswan_security_data.provenance import EvidenceProvenance
 
-from . import postgres_events, postgres_security_data
+from . import postgres_events, postgres_graphs, postgres_security_data
 from .postgres_case_ownership import PostgresCaseOwnership
 from .postgres_scope import ScopedPostgres
 
@@ -73,6 +74,7 @@ class PostgresCases(CaseReader):
                 "investigation_hold_audit",
                 "investigation_memory_removals",
                 "investigation_events",
+                "case_graph_snapshots",
                 *postgres_security_data.TABLES,
             ),
         )
@@ -139,7 +141,12 @@ class PostgresCases(CaseReader):
                 for table, query in ARTIFACT_QUERIES.items()
             }
         security_data = {name: captured.pop(name) for name in postgres_security_data.ARTIFACTS}
-        bundle = {**captured, "security_data_digest": postgres_security_data.digest(security_data)}
+        graph = captured.pop("security_graphs")[0]["snapshot"]
+        bundle = {
+            **captured,
+            "security_data_digest": postgres_security_data.digest(security_data),
+            "graph_digest": sha256(graph),
+        }
         self._directory.insert(db, context, case, utc_timestamp(report.created_at))
         db.execute(
             """INSERT INTO riswan_data.investigations
@@ -156,6 +163,7 @@ class PostgresCases(CaseReader):
         )
         postgres_events.append(db, context, case, report.canonical_events or [])
         postgres_security_data.append(db, context, report, security_data)
+        postgres_graphs.append(db, context, case, graph)
         return report
 
     @staticmethod
@@ -182,6 +190,9 @@ class PostgresCases(CaseReader):
             artifacts.update(
                 postgres_security_data.read(db, case, artifacts["security_data_digest"])
             )
+        if "graph_digest" in artifacts:
+            snapshot = postgres_graphs.read(db, case, artifacts["graph_digest"])
+            artifacts["security_graphs"] = [{"investigation_id": case, "snapshot": snapshot}]
         return report, artifacts
 
     def artifact(self, case: str, name: str):
@@ -196,6 +207,10 @@ class PostgresCases(CaseReader):
             ):
                 raise NotFoundError("Investigation memory unavailable.")
             return artifacts[name]
+
+    def security_graph(self, investigation_id: str):
+        rows = self.artifact(investigation_id, "security_graphs")
+        return postgres_graphs.validate(investigation_id, rows[0]["snapshot"])
 
     def events(self, case: str) -> dict[str, object]:
         with self._scope.transaction() as (db, _):

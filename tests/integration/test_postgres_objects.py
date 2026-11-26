@@ -30,7 +30,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -200,6 +200,8 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     assert send(endpoint + "/memory", tenant=a)[0] == 501
     assert send(endpoint + "/risk", tenant=a)[0] == 200
     assert send(endpoint + "/knowledge-graph", tenant=a)[0] == 200
+    assert send(endpoint + "/knowledge-graph/ontology", tenant=a)[0] == 200
+    assert send(endpoint + "/knowledge-graph/ontology", tenant=b, cookie=bob)[0] == 404
     assert send(endpoint + "/temporal-correlation", tenant=a)[0] == 200
     original_evidence = send(endpoint + "/evidence", tenant=a)[1]
     assert original_evidence
@@ -276,7 +278,8 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
                 "SELECT count(*) FROM riswan_data.investigation_events WHERE investigation_id = %s",
                 (case,),
             ).fetchone()[0] == len(events["events"])
-            assert row[1]["security_graphs"] and row[1]["security_data_digest"]
+            assert row[1]["graph_digest"] and row[1]["security_data_digest"]
+            assert "security_graphs" not in row[1]
             assert "raw_evidence" not in row[1] and "evidence_receipts" not in row[1]
             for table in ("case_raw_evidence", "case_evidence_receipts", "case_custody"):
                 from psycopg import sql
