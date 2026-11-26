@@ -30,7 +30,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
+        ).fetchall() == [(version,) for version in range(1, 12)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
