@@ -16,12 +16,14 @@ from riswan_ir.models import (
     InvestigationSummary,
 )
 from riswan_ir.models.base import Text
+from riswan_ir.schema.projection import export_events
 from riswan_ir.storage import evidence_store
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.core.exceptions import NotFoundError
 from riswan_platform.data_protection import LegalHold, Ownership, ProtectionDenied
 from riswan_security_data.provenance import EvidenceProvenance
 
+from . import postgres_events
 from .postgres_case_ownership import PostgresCaseOwnership
 from .postgres_scope import ScopedPostgres
 
@@ -70,6 +72,7 @@ class PostgresCases(CaseReader):
                 "investigation_legal_holds",
                 "investigation_hold_audit",
                 "investigation_memory_removals",
+                "investigation_events",
             ),
         )
         self._directory = PostgresCaseOwnership(pool)
@@ -148,6 +151,7 @@ class PostgresCases(CaseReader):
                 parent.id if parent else None,
             ),
         )
+        postgres_events.append(db, context, case, report.canonical_events or [])
         return report
 
     @staticmethod
@@ -182,6 +186,16 @@ class PostgresCases(CaseReader):
             ):
                 raise NotFoundError("Investigation memory unavailable.")
             return artifacts[name]
+
+    def events(self, case: str) -> dict[str, object]:
+        with self._scope.transaction() as (db, _):
+            report, _ = self._bundle(db, case)
+            stored = postgres_events.read(db, case)
+            if stored:
+                if stored != report.canonical_events:
+                    raise NotFoundError("Canonical event archive unavailable.")
+                report = report.model_copy(update={"canonical_events": stored})
+            return export_events(report)
 
     def evidence_ids(self, case: str, *, raw: bool = False) -> tuple[str, ...]:
         with self._scope.transaction() as (db, _):

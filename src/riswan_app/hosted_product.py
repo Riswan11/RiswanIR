@@ -202,6 +202,7 @@ class HostedPostgresCases:
         if method != "GET" or suffix not in {
             "",
             "/evidence",
+            "/events",
             "/knowledge-graph",
             "/temporal-correlation",
             "/risk",
@@ -218,6 +219,16 @@ class HostedPostgresCases:
             ).payload()
         if suffix == "/evidence":
             return 200, [item.payload() for item in report.evidence]
+        if suffix == "/events":
+            guard.require(Permission.EXPORT, scope.kind, scope.id)
+            for event_id in self.store.evidence_ids(case_id):
+                guard.require(
+                    Permission.EXPORT,
+                    ScopeType.EVIDENCE,
+                    f"{case_id}/normalized/{event_id}",
+                    parent=scope,
+                )
+            return 200, self.store.events(case_id)
         if suffix == "/knowledge-graph":
             guard.require(Permission.GRAPH, scope.kind, scope.id)
             self._evidence(guard, scope, raw=True)

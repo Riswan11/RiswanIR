@@ -30,7 +30,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -203,6 +203,9 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     assert send(endpoint + "/temporal-correlation", tenant=a)[0] == 200
     original_evidence = send(endpoint + "/evidence", tenant=a)[1]
     assert original_evidence
+    status, events = send(endpoint + "/events", tenant=a)
+    assert status == 200 and events["events"]
+    assert send(endpoint + "/events", tenant=b, cookie=bob)[0] == 404
     assert send(endpoint + "/evidence", tenant=b, cookie=bob)[0] == 404
     assert send(endpoint, tenant=a)[1]["evidence"] == original_evidence
     status, hold = send(endpoint + "/legal-holds", "POST", tenant=a, payload={"reason": "Preserve"})
@@ -247,6 +250,10 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
                 (case,),
             ).fetchone()
             assert row[0]["title"] == "Updated"
+            assert db.execute(
+                "SELECT count(*) FROM riswan_data.investigation_events WHERE investigation_id = %s",
+                (case,),
+            ).fetchone()[0] == len(events["events"])
             assert row[1]["evidence_receipts"] and row[1]["security_graphs"]
             assert row[1]["raw_evidence"] and row[1]["evidence_custody"]
             with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():

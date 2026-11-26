@@ -15,6 +15,7 @@ MIGRATIONS = (
     "0003_investigations.sql",
     "0004_revisions.sql",
     "0005_legal_holds.sql",
+    "0006_canonical_events.sql",
 )
 
 
