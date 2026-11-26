@@ -18,6 +18,9 @@ MIGRATIONS = (
     "0006_canonical_events.sql",
     "0007_security_data.sql",
     "0008_graph_snapshots.sql",
+    "0009_correlation_risk.sql",
+    "0010_graph_relationships.sql",
+    "0011_memory_snapshots.sql",
 )
 
 

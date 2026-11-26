@@ -8,7 +8,10 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict
 
 from riswan_ir.core.fields import utc_timestamp
+from riswan_ir.correlation.temporal.engine import run as correlate_temporal
+from riswan_ir.correlation.temporal.registry import select_rules
 from riswan_ir.investigation.ports import CaseReader
+from riswan_ir.knowledge_graph.builder import build_security_graph
 from riswan_ir.models import (
     EvidenceSubmission,
     InvestigationReport,
@@ -16,15 +19,17 @@ from riswan_ir.models import (
     InvestigationSummary,
 )
 from riswan_ir.models.base import Text
+from riswan_ir.risk.engine import calculate as calculate_risk
+from riswan_ir.risk.models import Assessment, Reassessment
 from riswan_ir.schema.projection import export_events
 from riswan_ir.storage import evidence_store
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.core.exceptions import NotFoundError
 from riswan_platform.data_protection import LegalHold, Ownership, ProtectionDenied
-from riswan_security_data.integrity import sha256
+from riswan_security_data.integrity import canonical_json, sha256
 from riswan_security_data.provenance import EvidenceProvenance
 
-from . import postgres_events, postgres_graphs, postgres_security_data
+from . import postgres_events, postgres_graphs, postgres_intelligence, postgres_security_data
 from .postgres_case_ownership import PostgresCaseOwnership
 from .postgres_scope import ScopedPostgres
 
@@ -75,6 +80,11 @@ class PostgresCases(CaseReader):
                 "investigation_memory_removals",
                 "investigation_events",
                 "case_graph_snapshots",
+                "case_graph_nodes",
+                "case_graph_edges",
+                "case_temporal_snapshots",
+                "case_risk_assessments",
+                "case_memory_snapshots",
                 *postgres_security_data.TABLES,
             ),
         )
@@ -142,10 +152,18 @@ class PostgresCases(CaseReader):
             }
         security_data = {name: captured.pop(name) for name in postgres_security_data.ARTIFACTS}
         graph = captured.pop("security_graphs")[0]["snapshot"]
+        temporal = captured.pop("temporal_correlations")[0]["snapshot"]
+        risk = captured.pop("risk_assessments")
+        memory = {name: captured.pop(name) for name in postgres_intelligence.MEMORY_ARTIFACTS}
         bundle = {
             **captured,
             "security_data_digest": postgres_security_data.digest(security_data),
             "graph_digest": sha256(graph),
+            "graph_relational": True,
+            "temporal_digest": sha256(temporal),
+            "risk_digest": postgres_intelligence.risk_digest(risk),
+            "initial_risk_count": len(risk),
+            "memory_digest": sha256(canonical_json(memory)),
         }
         self._directory.insert(db, context, case, utc_timestamp(report.created_at))
         db.execute(
@@ -164,6 +182,8 @@ class PostgresCases(CaseReader):
         postgres_events.append(db, context, case, report.canonical_events or [])
         postgres_security_data.append(db, context, report, security_data)
         postgres_graphs.append(db, context, case, graph)
+        postgres_intelligence.append(db, context, case, temporal, risk)
+        postgres_intelligence.save_memory(db, context, case, memory)
         return report
 
     @staticmethod
@@ -193,6 +213,19 @@ class PostgresCases(CaseReader):
         if "graph_digest" in artifacts:
             snapshot = postgres_graphs.read(db, case, artifacts["graph_digest"])
             artifacts["security_graphs"] = [{"investigation_id": case, "snapshot": snapshot}]
+        if "temporal_digest" in artifacts:
+            snapshot = postgres_intelligence.temporal_snapshot(
+                db, case, artifacts["temporal_digest"]
+            )
+            artifacts["temporal_correlations"] = [{"investigation_id": case, "snapshot": snapshot}]
+        if "risk_digest" in artifacts:
+            artifacts["risk_assessments"] = postgres_intelligence.risk_rows(
+                db, case, artifacts["risk_digest"], artifacts.get("initial_risk_count")
+            )
+        if "memory_digest" in artifacts:
+            artifacts.update(
+                postgres_intelligence.read_memory(db, case, artifacts["memory_digest"])
+            )
         return report, artifacts
 
     def artifact(self, case: str, name: str):
@@ -209,8 +242,130 @@ class PostgresCases(CaseReader):
             return artifacts[name]
 
     def security_graph(self, investigation_id: str):
-        rows = self.artifact(investigation_id, "security_graphs")
-        return postgres_graphs.validate(investigation_id, rows[0]["snapshot"])
+        with self._scope.transaction() as (db, _):
+            _, artifacts = self._bundle(db, investigation_id)
+            snapshot = artifacts["security_graphs"][0]["snapshot"]
+            if artifacts.get("graph_relational"):
+                return postgres_graphs.graph_from_rows(db, investigation_id, snapshot)
+            return postgres_graphs.validate(investigation_id, snapshot)
+
+    def temporal_result(self, case_id: str):
+        rows = self.artifact(case_id, "temporal_correlations")
+        return postgres_intelligence.parse_temporal(case_id, rows[0]["snapshot"]).result
+
+    def replay_temporal(self, case_id: str, versions: dict[str, str] | None = None):
+        with self._scope.transaction() as (db, _):
+            report, artifacts = self._bundle(db, case_id)
+            snapshot = postgres_intelligence.parse_temporal(
+                case_id, artifacts["temporal_correlations"][0]["snapshot"]
+            )
+            with self._compiler.connect() as staging:
+                self._compiler.seed_transient_parent(staging, report)
+                self._restore(staging, artifacts)
+                if not evidence_store.verify(staging, case_id, report).valid:
+                    raise ValueError("Temporal replay requires verified investigation evidence.")
+                received = self._compiler._received_times(staging, case_id)
+            graph = build_security_graph(report)
+            baseline = correlate_temporal(
+                report,
+                graph,
+                select_rules(
+                    snapshot.rules, {item.id: item.version for item in snapshot.result.rules}
+                ),
+                snapshot.policy,
+                received,
+                snapshot.result.lineage_id,
+            )
+            if baseline != snapshot.result:
+                raise ValueError("Archived temporal correlation cannot be reproduced.")
+            if versions is None:
+                return baseline
+            return correlate_temporal(
+                report,
+                graph,
+                select_rules(snapshot.rules, versions),
+                snapshot.policy,
+                received,
+                snapshot.result.lineage_id,
+            )
+
+    def risk_page(
+        self,
+        case_id: str,
+        limit: int,
+        offset: int,
+        subject: tuple[str, str] | None,
+        *,
+        scoped: bool = False,
+    ) -> list[Assessment]:
+        archives = postgres_intelligence.parse_risk(
+            case_id, self.artifact(case_id, "risk_assessments")
+        )
+        assessments = [item.assessment for item in reversed(archives)]
+        if subject:
+            assessments = [
+                item for item in assessments if (item.subject_kind, item.subject_id) == subject
+            ]
+        else:
+            latest: dict[tuple[str, str], Assessment] = {}
+            for item in assessments:
+                latest.setdefault((item.subject_kind, item.subject_id), item)
+            assessments = list(latest.values())
+        return assessments[offset : offset + limit]
+
+    def reassess(self, case: str, request: Reassessment) -> Assessment:
+        with self._scope.transaction() as (db, context):
+            self._lock_case(db, case)
+            report, artifacts = self._bundle(db, case)
+            if "risk_digest" not in artifacts or report.previous_investigation_id:
+                raise NotFoundError("Reassessment unavailable for this case.")
+            old_ids = {row["id"] for row in artifacts["risk_assessments"]}
+            with self._compiler.connect() as staging:
+                self._compiler.seed_transient_parent(staging, report)
+                self._restore(staging, artifacts)
+                if not evidence_store.verify(staging, case, report).valid:
+                    raise ValueError("Risk reassessment requires verified investigation evidence.")
+                assessed = self._compiler._score_existing_risk(
+                    staging, case, datetime.now(UTC).isoformat(), "reassessment", request
+                )
+                if assessed is None:
+                    raise NotFoundError("Risk subject not found.")
+                added = [
+                    dict(row)
+                    for row in staging.execute(ARTIFACT_QUERIES["risk_assessments"])
+                    if row["id"] not in old_ids
+                ]
+            postgres_intelligence.append_risk(db, context, case, added)
+            return assessed
+
+    def risk_assessment(
+        self, case_id: str, assessment_id: str, *, replay: bool, scoped: bool = False
+    ) -> Assessment:
+        entries = postgres_intelligence.parse_risk(
+            case_id, self.artifact(case_id, "risk_assessments")
+        )
+        by_id = {item.assessment.id: item for item in entries}
+        archive = by_id.get(assessment_id)
+        if archive is None:
+            raise NotFoundError("Risk assessment not found.")
+        stored = archive.assessment
+        if not replay:
+            return stored
+        origin = by_id.get(stored.original_assessment_id)
+        if origin is None:
+            raise NotFoundError("Original assessment unavailable for this case.")
+        reproduced = calculate_risk(
+            case_id,
+            archive.inputs,
+            archive.policy,
+            stored.created_at,
+            stored.trigger,
+            original=origin.assessment if origin is not archive else None,
+            predecessor_id=stored.previous_assessment_id,
+        ).assessment
+        if reproduced != stored:
+            raise ValueError("Archived assessment could not be reproduced.")
+        return reproduced
 
     def events(self, case: str) -> dict[str, object]:
         with self._scope.transaction() as (db, _):

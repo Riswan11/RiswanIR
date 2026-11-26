@@ -30,7 +30,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -203,6 +203,30 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     assert send(endpoint + "/knowledge-graph/ontology", tenant=a)[0] == 200
     assert send(endpoint + "/knowledge-graph/ontology", tenant=b, cookie=bob)[0] == 404
     assert send(endpoint + "/temporal-correlation", tenant=a)[0] == 200
+    assert send(endpoint + "/temporal-correlation/replay", tenant=a)[0] == 200
+    assert send(endpoint + "/incidents", tenant=a)[0] == 200
+    assert send(endpoint + "/incidents", tenant=b, cookie=bob)[0] == 404
+    _, risk = send(endpoint + "/risk", tenant=a)
+    for assessment in risk["assessments"]:
+        detail = endpoint + "/risk/" + assessment["id"]
+        assert send(detail, tenant=a) == (200, assessment)
+        assert send(detail + "/replay", tenant=a) == (200, assessment)
+        assert "confidence" in assessment
+    if risk["assessments"]:
+        assessment = risk["assessments"][0]
+        assert (
+            send(
+                endpoint + "/risk/reassess",
+                "POST",
+                tenant=a,
+                payload={
+                    "subject_kind": assessment["subject_kind"],
+                    "subject_id": assessment["subject_id"],
+                },
+            )[0]
+            == 200
+        )
+        assert send(endpoint + "/risk/" + assessment["id"], tenant=a) == (200, assessment)
     original_evidence = send(endpoint + "/evidence", tenant=a)[1]
     assert original_evidence
     status, events = send(endpoint + "/events", tenant=a)
@@ -280,6 +304,26 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
             ).fetchone()[0] == len(events["events"])
             assert row[1]["graph_digest"] and row[1]["security_data_digest"]
             assert "security_graphs" not in row[1]
+            assert "temporal_correlations" not in row[1] and "risk_assessments" not in row[1]
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM riswan_data.case_graph_nodes WHERE investigation_id = %s",
+                    (case,),
+                ).fetchone()[0]
+                > 0
+            )
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM riswan_data.case_graph_edges WHERE investigation_id = %s",
+                    (case,),
+                ).fetchone()[0]
+                > 0
+            )
+            with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
+                db.execute(
+                    "INSERT INTO riswan_data.case_graph_edges VALUES (%s, 'ir', %s, 'missing', 999, 'foreign', 'foreign', '{}')",
+                    (a, case),
+                )
             assert "raw_evidence" not in row[1] and "evidence_receipts" not in row[1]
             for table in ("case_raw_evidence", "case_evidence_receipts", "case_custody"):
                 from psycopg import sql
@@ -381,6 +425,47 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
                 "INSERT INTO riswan_data.case_evidence_receipts VALUES (%s, 'ir', %s, 999, 'wrong', 'fixture', '{}')",
                 (a, case),
             )
+    from tests.integration.test_risk_assessment import restoration
+    from tests.integration.test_temporal_correlation import ROOT, scenario
+
+    status, assessed_case = send(
+        base,
+        "POST",
+        tenant=a,
+        payload={
+            "title": "Historical risk",
+            "principal": ROOT,
+            "records": scenario(10) + [restoration()],
+        },
+    )
+    assert status == 201
+    risk_path = f"{base}/{assessed_case['id']}"
+    assessment = next(
+        item
+        for item in send(risk_path + "/risk", tenant=a)[1]["assessments"]
+        if item["subject_kind"] == "finding"
+    )
+    assert assessment["risk"]["score"] != assessment["confidence"]["score"]
+    reference = next(
+        item["reference"]["evidence_id"]
+        for item in send(risk_path + "/evidence", tenant=a)[1]
+        if item["id"] == "restore"
+    )
+    status, contained = send(
+        risk_path + "/risk/reassess",
+        "POST",
+        tenant=a,
+        payload={
+            "subject_kind": "finding",
+            "subject_id": assessment["subject_id"],
+            "containment_evidence_id": reference,
+        },
+    )
+    assert status == 200 and contained["id"] != assessment["id"]
+    assert contained["original_assessment_id"] == assessment["id"]
+    history = f"{risk_path}/risk/finding/{assessment['subject_id']}/history"
+    assert send(history, tenant=a)[1]["assessments"] == [contained, assessment]
+    assert send(risk_path + "/risk/" + contained["id"] + "/replay", tenant=a) == (200, contained)
     assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
         "control.sqlite3",
         "identity.sqlite3",

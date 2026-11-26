@@ -7,11 +7,12 @@ from urllib.parse import parse_qsl
 from uuid import UUID
 
 from riswan_ir.api.http import Application
-from riswan_ir.correlation.temporal.models import TemporalSnapshot
+from riswan_ir.correlation.temporal.service import serve as serve_temporal
 from riswan_ir.knowledge_graph.service import serve_graph
 from riswan_ir.models import EvidenceSubmission, InvestigationRequest, InvestigationSummary
 from riswan_ir.product import IRProduct
-from riswan_ir.risk.models import RiskArchive
+from riswan_ir.risk.models import Reassessment
+from riswan_ir.risk.service import serve as serve_risk
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.authorization import (
     AuthorizationRequest,
@@ -202,9 +203,22 @@ class HostedPostgresCases:
                 case_id, EvidenceSubmission.model_validate(Application.body(env))
             )
             return 201, {"id": report.id, "created_at": report.created_at}
+        if method == "POST" and suffix == "/risk/reassess":
+            guard.require(Permission.RISK, scope.kind, scope.id)
+            self._evidence(guard, scope)
+            self._evidence(guard, scope, raw=True)
+            request = Reassessment.model_validate(Application.body(env))
+            return 200, self.store.reassess(case_id, request).payload()
         graph_route = suffix == "/knowledge-graph" or suffix.startswith("/knowledge-graph/")
+        temporal_route = suffix in {
+            "/temporal-correlation",
+            "/temporal-correlation/replay",
+            "/incidents",
+        } or suffix.startswith("/incidents/")
+        risk_route = suffix == "/risk" or suffix.startswith("/risk/")
+
         if method != "GET" or (
-            not graph_route
+            not (graph_route or temporal_route or risk_route)
             and suffix
             not in {
                 "",
@@ -277,22 +291,19 @@ class HostedPostgresCases:
                 suffix.removeprefix("/knowledge-graph"),
                 env.get("QUERY_STRING", ""),
             )
-        if suffix == "/temporal-correlation":
+        if temporal_route:
             guard.require(Permission.CORRELATE, scope.kind, scope.id)
-            rows = self.store.artifact(case_id, "temporal_correlations")
-            return 200, TemporalSnapshot.model_validate_json(rows[0]["snapshot"]).result.payload()
-        if suffix == "/risk":
+            if report.previous_investigation_id:
+                guard.require(Permission.READ, scope.kind, report.previous_investigation_id)
+            return 200, serve_temporal(self.store, case_id, suffix, env.get("QUERY_STRING", ""))
+        if risk_route:
             guard.require(Permission.RISK, scope.kind, scope.id)
             self._evidence(guard, scope, raw=True)
             if report.previous_investigation_id:
                 guard.require(Permission.READ, scope.kind, report.previous_investigation_id)
-            rows = self.store.artifact(case_id, "risk_assessments")
-            return 200, {
-                "assessments": [
-                    RiskArchive.model_validate_json(row["archive"]).assessment.payload()
-                    for row in rows
-                ]
-            }
+            return 200, serve_risk(
+                self.store, case_id, suffix, env.get("QUERY_STRING", ""), scoped=True
+            )
         result = report.payload()
         for action, field in (
             (Permission.GRAPH, "graph"),

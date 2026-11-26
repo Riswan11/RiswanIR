@@ -67,3 +67,15 @@ Hosted preview raw payloads temporarily reside in riswan_data.case_raw_evidence.
 ### A.5 initial graph port
 
 New cases and revisions store the immutable graph snapshot in case_graph_snapshots, protected by forced RLS and a same-scope case foreign key. The bundle retains its digest and the existing graph query service reads the dedicated snapshot. Earlier preview cases retain their original graph in PostgreSQL. Independent risk, temporal correlation and historical memory repositories remain open.
+
+
+### A.5 independent intelligence persistence
+
+| Artifact | PostgreSQL authority for new cases | Operations and boundaries |
+| --- | --- | --- |
+| Graph | case_graph_snapshots, case_graph_nodes, case_graph_edges | Ordered node and edge rows are read under case scope, compared with the historical snapshot and passed to the existing query service. Composite endpoint foreign keys require both nodes in the same investigation, tenant and product. |
+| Temporal correlation | case_temporal_snapshots | Case read, incident views and deterministic replay use the archived rules, policy, evidence receipt timestamps and lineage. Case creation and revisions append immutable snapshots. |
+| Risk and confidence | case_risk_assessments | Ordered archive rows preserve the original policy, scoring inputs, risk and confidence. Original-case reassessment appends history using the existing scoring logic. Same-case replay is supported. Replaying a revision that refers to an assessment originating in another case requires additional authorized origin resolution. |
+| Historical memory | case_memory_snapshots, investigation_memory_removals | Initial per-case profile, account scopes and expiring records persist independently. Hold enforcement still serializes logical removal. Candidate selection, feedback, behavioral baseline and response-history integration remain pending. |
+
+Every new table uses forced RLS, a scoped primary or foreign key and non-owner runtime grants limited to reading and appending. Case and revision writes include these records in the original transaction. The bundle carries archive digests. Prior preview rows keep their older PostgreSQL snapshots. The risk subject-history index follows scope, kind, subject and ordinal. The current reader verifies archive digests before returning history and still pages case-scoped results in application memory, so production query-plan verification remains pending. No PostgreSQL control cutover or evidence encryption has started.
