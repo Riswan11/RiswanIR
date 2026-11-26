@@ -169,7 +169,11 @@ class Store:
         context = require_context()
         db.execute(
             "INSERT INTO investigations VALUES (?, ?, ?)",
-            (parent.id, parent.created_at, parent.model_dump_json(by_alias=True)),
+            (
+                parent.id,
+                parent.created_at,
+                parent.model_dump_json(by_alias=True, exclude_unset=True),
+            ),
         )
         db.execute(
             "INSERT INTO investigation_ownership VALUES (?, ?, ?)",

@@ -136,7 +136,7 @@ class PostgresCases(CaseReader):
                 context.tenant_id,
                 context.product_id,
                 case,
-                report.model_dump_json(by_alias=True),
+                report.model_dump_json(by_alias=True, exclude_unset=True),
                 json.dumps(captured),
                 parent.id if parent else None,
             ),
