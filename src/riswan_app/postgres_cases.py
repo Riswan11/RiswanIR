@@ -233,15 +233,17 @@ class PostgresCases(CaseReader):
                 return evidence_store.verify(staging, case, report)
 
     def timeline(self, case: str, query):
-        with self._scope.transaction() as (db, _):
+        with self._scope.transaction() as (db, context):
             report, _ = self._bundle(db, case)
-            selected = postgres_events.timeline(db, case, query)
+            selected = postgres_events.timeline(db, context, case, query)
             reference = {item.id: item for item in report.canonical_events or []}
             if any(reference.get(item.id) != item for item in selected):
                 raise NotFoundError("Canonical event archive unavailable.")
             count = query.limit
             archived = report.model_copy(update={"canonical_events": selected[:count]})
             result = export_events(archived)
+            if not selected and report.canonical_events:
+                result["schema_version"] = report.canonical_events[0].metadata.schema_version
             result["next_offset"] = query.offset + count if len(selected) > count else None
             return result
 

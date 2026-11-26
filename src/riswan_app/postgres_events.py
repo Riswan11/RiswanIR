@@ -55,7 +55,7 @@ class TimelineQuery(BaseModel):
 
 TIMELINE_SQL = """
 SELECT event FROM riswan_data.investigation_events e
-WHERE investigation_id = %(case)s
+WHERE tenant_id = %(tenant)s AND product_id = %(product)s AND investigation_id = %(case)s
   AND (%(start)s::timestamptz IS NULL OR observed_at >= %(start)s::timestamptz)
   AND (%(end)s::timestamptz IS NULL OR observed_at < %(end)s::timestamptz)
   AND (%(type)s::text IS NULL OR event #>> '{classification,type_uid}' = %(type)s::text)
@@ -70,12 +70,14 @@ ORDER BY observed_at, ordinal LIMIT %(limit)s OFFSET %(offset)s
 """
 
 
-def timeline(db, case: str, query: TimelineQuery) -> list[SecurityEvent]:
+def timeline(db, context, case: str, query: TimelineQuery) -> list[SecurityEvent]:
     if query.start and query.end and query.start >= query.end:
         raise ValueError("Timeline start must precede end.")
     rows = db.execute(
         TIMELINE_SQL,
         {
+            "tenant": context.tenant_id,
+            "product": context.product_id,
             "case": case,
             "start": query.start,
             "end": query.end,

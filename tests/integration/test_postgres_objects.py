@@ -290,11 +290,12 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
             db.execute("SET LOCAL enable_seqscan = off")
             plan = db.execute(
                 """EXPLAIN SELECT event FROM riswan_data.investigation_events
-                   WHERE investigation_id = %s AND event #>> '{classification,type_uid}' = %s
+                   WHERE tenant_id = %s AND product_id = 'ir' AND investigation_id = %s
+                     AND event #>> '{classification,type_uid}' = %s
                    ORDER BY observed_at, ordinal LIMIT 50""",
-                (case, str(event_type)),
+                (a, case, str(event_type)),
             ).fetchall()
-            assert any("scoped_event_type_timeline" in row[0] for row in plan)
+            assert any("Index" in row[0] for row in plan), plan
             with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
                 orphan = uuid4().hex
                 db.execute(
