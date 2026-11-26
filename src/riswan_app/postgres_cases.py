@@ -91,7 +91,14 @@ class PostgresCases(CaseReader):
             }
             if not submission.records:
                 raise ValueError("A revision requires supplemental evidence.")
-            records = [json.loads(payloads[row["raw_id"]]) for row in receipts]
+            inherited_bytes = [payloads[row["raw_id"]] for row in receipts]
+            if (
+                sum(len(value.encode()) for value in inherited_bytes)
+                + len(submission.model_dump_json().encode())
+                > 8_000_000
+            ):
+                raise ValueError("Revision exceeds the supported evidence size.")
+            records = [json.loads(value) for value in inherited_bytes]
             request = InvestigationRequest(
                 title=parent.title,
                 principal=parent.principal,

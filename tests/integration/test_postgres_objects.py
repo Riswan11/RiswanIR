@@ -1,5 +1,6 @@
 """Run object-layer RLS tests against a disposable PostgreSQL service."""
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
@@ -284,9 +285,21 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     descendant = send(f"{base}/{revised['id']}", tenant=a)[1]
     assert descendant["previous_investigation_id"] == case
     assert send(endpoint + "/evidence", tenant=a)[1] == original_evidence
-    assert {(item["id"], item["integrity_hash"]) for item in original_evidence} <= {
-        (item["id"], item["integrity_hash"]) for item in descendant["evidence"]
+    assert {item["id"] for item in original_evidence} <= {
+        item["id"] for item in descendant["evidence"]
     }
+    # Normalized hashes include revision-specific references. The historical parent
+    # is immutable, and inherited receipts preserve the original raw hashes.
+    with bind_context(PlatformContext(UUID(a), str(uuid4()), "human", "ir", "req", "corr")):
+
+        def receipts(case_id):
+            return {
+                (item["source_event_id"], item["evidence_id"], item["raw_integrity_hash"])
+                for row in hosted.store.artifact(case_id, "evidence_receipts")
+                for item in (json.loads(row["provenance"]),)
+            }
+
+        assert receipts(case) < receipts(revised["id"])
     with monkeypatch.context() as patches:
         patches.setattr(hosted.store._directory, "insert", aborted)
         assert (
