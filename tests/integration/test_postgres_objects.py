@@ -139,12 +139,9 @@ def test_postgres_case_ownership_scopes_directory_and_sql(postgres_pool):
             db.execute("SELECT count(*) FROM riswan_data.schema_migrations")
 
 
-def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, request_payload):
+@pytest.fixture
+def hosted_postgres(postgres_pool, tmp_path, monkeypatch):
     from datetime import UTC, datetime
-    from urllib.parse import urlencode
-
-    import psycopg
-    from psycopg_pool import PoolClosed
 
     from riswan_app import identity_runtime
     from riswan_platform.identity.configuration import OIDCSettings
@@ -192,6 +189,23 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     a, b = first["tenant_id"], second["tenant_id"]
     base = "/v1/investigations"
     assert send(base)[0] == 404
+    return app, send, alice, bob, a, b
+
+
+def test_hosted_postgres_case_preview(
+    postgres_pool, hosted_postgres, tmp_path, monkeypatch, request_payload
+):
+    from urllib.parse import urlencode
+
+    import psycopg
+    from psycopg_pool import PoolClosed
+
+    from riswan_app import identity_runtime
+    from tests.integration.test_identity_runtime import call
+
+    path = tmp_path / "oidc.json"
+    app, send, alice, bob, a, b = hosted_postgres
+    base = "/v1/investigations"
     status, report = send(base, "POST", tenant=a, payload=request_payload)
     assert status == 201
     case = report["id"]
@@ -698,3 +712,178 @@ def test_postgres_memory_candidate_scope_and_plans(postgres_pool, scope, record_
             ).fetchone()[0][0]
             assert plan["Plan"]["Actual Rows"] == 101
             record_property("memory_candidate_query_plan", json.dumps(plan))
+            _intelligence_read_plans(db, owner, actor, own_ids, current, record_property)
+
+
+def _intelligence_read_plans(db, tenant, actor, ids, timestamp, record_property):
+    db.execute(
+        """INSERT INTO riswan_data.case_graph_snapshots
+           SELECT %s, 'ir', id, '{}' FROM unnest(%s::text[]) ids(id)""",
+        (tenant, ids),
+    )
+    db.execute(
+        """INSERT INTO riswan_data.case_graph_nodes
+           SELECT %s, 'ir', id, n::text, n, '{}'::jsonb
+           FROM unnest(%s::text[]) ids(id) CROSS JOIN generate_series(1, 8) n""",
+        (tenant, ids),
+    )
+    db.execute(
+        """INSERT INTO riswan_data.case_graph_edges
+           SELECT %s, 'ir', id, n::text, n, n::text, (n + 1)::text, '{}'::jsonb
+           FROM unnest(%s::text[]) ids(id) CROSS JOIN generate_series(1, 7) n""",
+        (tenant, ids),
+    )
+    db.execute(
+        """INSERT INTO riswan_data.case_temporal_snapshots
+           SELECT %s, 'ir', id, '{}' FROM unnest(%s::text[]) ids(id)""",
+        (tenant, ids),
+    )
+    db.execute(
+        """INSERT INTO riswan_data.case_risk_assessments
+           SELECT %s, 'ir', id, n, n::text, 'finding', 'subject', '{}'
+           FROM unnest(%s::text[]) ids(id) CROSS JOIN generate_series(1, 4) n""",
+        (tenant, ids),
+    )
+    db.execute(
+        """INSERT INTO riswan_data.case_memory_history
+           SELECT %s, 'ir', id, gen_random_uuid(), %s, 'feedback', n, %s, '[]'::jsonb
+           FROM unnest(%s::text[]) ids(id) CROSS JOIN generate_series(1, 4) n""",
+        (tenant, str(actor), timestamp, ids),
+    )
+    target = ids[-1]
+    patterns = (
+        (
+            "graph_nodes",
+            "SELECT node FROM riswan_data.case_graph_nodes WHERE investigation_id = %s ORDER BY ordinal",
+            (target,),
+            8,
+        ),
+        (
+            "graph_edges",
+            "SELECT edge FROM riswan_data.case_graph_edges WHERE investigation_id = %s ORDER BY ordinal",
+            (target,),
+            7,
+        ),
+        (
+            "temporal",
+            "SELECT snapshot FROM riswan_data.case_temporal_snapshots WHERE investigation_id = %s",
+            (target,),
+            1,
+        ),
+        (
+            "risk_history",
+            """SELECT ordinal, id, kind, subject_id, archive FROM riswan_data.case_risk_assessments
+                           WHERE investigation_id = %s ORDER BY ordinal""",
+            (target,),
+            4,
+        ),
+        (
+            "revision_parent",
+            "SELECT parent_id FROM riswan_data.investigations WHERE investigation_id = %s",
+            (target,),
+            1,
+        ),
+        (
+            "baseline_feedback",
+            """SELECT kind, ordinal, recorded_at, entry FROM riswan_data.case_memory_history
+                                 WHERE investigation_id = %s AND kind = ANY(%s)
+                                 AND (%s::text IS NULL OR recorded_at <= %s::text) ORDER BY kind, ordinal""",
+            (target, ["feedback", "response"], timestamp, timestamp),
+            4,
+        ),
+    )
+    for name, query, params, row_count in patterns:
+        plan = db.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, params).fetchone()[0][
+            0
+        ]
+        assert plan["Plan"]["Actual Rows"] == row_count
+        record_property(f"{name}_query_plan", json.dumps(plan))
+
+
+def test_hosted_postgres_recurrence_and_point_in_time_baseline(hosted_postgres, monkeypatch):
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+    from urllib.parse import urlencode
+
+    from riswan_platform.authorization import Permission
+    from tests.integration.test_historical_memory import records
+    from tests.integration.test_temporal_correlation import ROOT
+
+    app, send, _, bob, tenant, other = hosted_postgres
+    base = "/v1/investigations"
+
+    def create(label, days):
+        observed = (datetime.now(UTC) - timedelta(days=days)).replace(
+            hour=3, minute=0, second=0, microsecond=0
+        )
+        events = [
+            {**event, "eventTime": (observed + timedelta(minutes=i)).isoformat()}
+            for i, event in enumerate(records(1, label), 1)
+        ]
+        status, report = send(
+            base,
+            "POST",
+            tenant=tenant,
+            payload={"title": label, "principal": ROOT, "records": events},
+        )
+        assert status == 201
+        return f"{base}/{report['id']}", report["created_at"]
+
+    first, _ = create("first", 15)
+    second, _ = create("second", 8)
+    for case in (first, second):
+        assert (
+            send(case + "/feedback", "POST", tenant=tenant, payload={"disposition": "confirmed"})[0]
+            == 201
+        )
+    present, as_of = create("current", 1)
+    cutoff = urlencode({"as_of": as_of})
+    status, history = send(present + "/memory", tenant=tenant, query=cutoff)
+    assert status == 200
+    assert history["historical_recurrence"]["SF-AWS-DATA-003"] == 50
+    assert history["behavioral_baselines"]
+    assert all(entry["state"] == "cold_start" for entry in history["behavioral_baselines"])
+    for case in (first, second):
+        assert (
+            send(case + "/feedback", "POST", tenant=tenant, payload={"disposition": "benign"})[0]
+            == 201
+        )
+        status, evidence = send(case + "/evidence", tenant=tenant)
+        assert status == 200
+        assert (
+            send(
+                case + "/memory/feedback",
+                "POST",
+                tenant=tenant,
+                payload={
+                    "classification": "authorized_activity",
+                    "evidence_references": [item["reference"]["evidence_id"] for item in evidence],
+                },
+            )[0]
+            == 201
+        )
+    assert send(present + "/memory", tenant=tenant, query=cutoff) == (200, history)
+    status, latest = send(present + "/memory", tenant=tenant)
+    assert status == 200
+    assert any(entry["state"] == "established" for entry in latest["behavioral_baselines"])
+    assert latest["historical_recurrence"] == {}
+    assert send(present + "/memory", tenant=other, cookie=bob)[0] == 404
+    evaluator = app._authenticated_routes.product.tenancy.evaluator
+    evaluate = evaluator.evaluate
+
+    def deny_first_memory(request):
+        decision = evaluate(request)
+        if (
+            request.action == Permission.MEMORY
+            and request.resource.scope.id == first.rsplit("/", 1)[-1]
+        ):
+            return replace(decision, effect="deny")
+        return decision
+
+    monkeypatch.setattr(evaluator, "evaluate", deny_first_memory)
+    status, limited = send(present + "/memory", tenant=tenant)
+    assert status == 200
+    assert all(entry["state"] == "cold_start" for entry in limited["behavioral_baselines"])
+    assert [item["investigation_id"] for item in limited["similar_investigations"]] == [
+        second.rsplit("/", 1)[-1]
+    ]
