@@ -1745,6 +1745,13 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 broker.execute(request.integration_id, "collect")
             assert temporary not in str(rejected.value)
             credential.execute.side_effect = None
+            valid = credential.execute.return_value
+            credential.execute.return_value = CredentialLease(
+                id=uuid4(), expires_at=datetime.now(UTC) - timedelta(seconds=1)
+            )
+            with pytest.raises(AccessDenied):
+                broker.execute(request.integration_id, "collect")
+            credential.execute.return_value = valid
             credential.execute.reset_mock()
 
             assert (
@@ -1756,6 +1763,26 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 broker.execute(request.integration_id, "collect")
             with pytest.raises(AccessDenied):
                 service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
+
+    from psycopg_pool import PoolClosed
+
+    from riswan_platform.identity.models import ProviderUnavailable as StorageUnavailable
+
+    def unavailable():
+        raise PoolClosed("injected outage")
+
+    with bind_principal(worker), bind_context(context):
+        with monkeypatch.context() as patches:
+            patches.setattr(service.repository._pool, "connection", unavailable)
+            with pytest.raises(StorageUnavailable):
+                broker.execute(request.integration_id, "collect")
+    credential.execute.assert_called_once_with(request)
+    assert (
+        send(f"/v1/organizations/{org['id']}/lifecycle", "POST", {"status": "suspended"})[0] == 200
+    )
+    with bind_principal(worker), bind_context(context), pytest.raises(AccessDenied):
+        broker.execute(request.integration_id, "collect")
+    assert send(f"/v1/organizations/{org['id']}/lifecycle", "POST", {"status": "active"})[0] == 200
 
     with postgres_control_pool.connection() as db, db.transaction(force_rollback=True):
         assert db.execute("SELECT count(*) FROM riswan_control.secret_metadata").fetchone() == (0,)
@@ -1894,6 +1921,11 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     )
     assert send(secret, "DELETE")[1]["status"] == "pending_deletion"
     assert send(secret + "/confirm-deletion", "POST")[1]["status"] == "deleted"
+    assert (
+        send(f"/v1/organizations/{org['id']}/lifecycle", "POST", {"status": "archived"})[0] == 200
+    )
+    with bind_principal(worker), bind_context(context), pytest.raises(AccessDenied):
+        broker.execute(request.integration_id, "collect")
     assert not list(tmp_path.glob("*.sqlite3"))
     assert value not in caplog.text and temporary not in caplog.text
 
