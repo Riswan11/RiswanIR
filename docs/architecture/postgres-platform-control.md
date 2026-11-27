@@ -87,3 +87,27 @@ records an audited pending intent before provider calls so a lost completion
 audit can be reconciled without reopening access. Secret IDs cannot be reused
 across products in the same tenant because provider slot keys predate product scoping. Test
 coverage uses synthetic provider operations and localhost PostgreSQL.
+
+### A.6.3 security review boundaries
+
+| Table | Scope and reference constraints | Runtime permissions |
+| --- | --- | --- |
+| secret_provider_bindings | Tenant and product, with globally unique instance ID and tenant FK | Select and insert |
+| secret_metadata | Tenant and product, with tenant-wide secret ID uniqueness and composite provider and current-version FKs | Select, insert, update metadata |
+| secret_versions | Tenant, product, secret and version, with composite secret FK | Select, insert, update version record |
+| secret_rotations | Tenant, product, secret and operation, with composite secret FK | Select, insert, update operation state |
+| secret_consumer_policies | Tenant, product, secret, workload and purpose unique key, with composite secret and membership FKs | Select, insert, update policy and enrollment time, delete |
+| secret_access_events | Tenant, product and session-bound audit actor, with indexed scoped event sequence | Select and insert |
+| credential_bindings | Tenant, product, integration, workload and enrollment key, with composite provider and membership FKs | Select and insert |
+| credential_leases | Tenant, product and lease ID, with composite credential binding FK and expiry | Select and insert |
+
+All eight tables force RLS. The restricted control role owns no table.
+The migration role owns DDL and is separate from runtime access. Workload
+matching is enforced on credential bindings and leases. The trusted control
+transaction checks active membership and enrollment before provider execution
+while holding the same database advisory lock that serializes membership and
+lifecycle mutations. This orders revocation before or after issuance. It cannot
+revoke a credential already issued by a provider, and it cannot undo an
+external SDK action if the database transaction later fails. The broker returns
+only after its lease and audit transaction succeeds. Connector orchestration and
+production audit recovery are tracked in subsequent milestones.

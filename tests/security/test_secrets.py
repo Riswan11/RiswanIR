@@ -529,3 +529,49 @@ def test_secret_lifecycle_rejects_invalid_transitions(secrets, monkeypatch, capl
         deleted = service.delete(request.id, confirm=True)
         assert service.delete(request.id) == deleted
     assert VALUE not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["validation", "readback"])
+def test_rotation_never_promotes_unverified_provider_values(secrets, monkeypatch, failure):
+    service, owner, _, org, _ = secrets
+    assert service.provider is not None
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        baseline = service.register(request)
+        with monkeypatch.context() as patches:
+            if failure == "validation":
+                patches.setattr(service, "_validate", lambda *_: False)
+            else:
+                patches.setattr(
+                    service.provider, "get", lambda _: SecretMaterial(value="mismatched")
+                )
+            with pytest.raises(SecretError) as rejected:
+                service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        assert VALUE not in str(rejected.value)
+        assert service.metadata(request.id).current_version == baseline.current_version
+
+
+def test_secret_provider_and_context_fail_closed(secrets, monkeypatch):
+    from dataclasses import replace
+
+    service, owner, _, org, _ = secrets
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    trusted = service.tenancy.context_for(owner, org.tenant_id, "ir", "review")
+    assert trusted is not None
+    with bind_principal(owner), bind_context(replace(trusted, actor_id=str(uuid4()))):
+        with pytest.raises(AccessDenied):
+            service.register(request)
+    with bind_principal(owner), bind_context(trusted):
+        service.register(request)
+        with monkeypatch.context() as patches:
+            patches.setattr(service, "environment", "production")
+            with pytest.raises(ProviderUnavailable):
+                service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        with monkeypatch.context() as patches:
+            patches.setattr(service, "provider", None)
+            with pytest.raises(ProviderUnavailable):
+                service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+            with pytest.raises(ProviderUnavailable):
+                service.register(request.model_copy(update={"id": uuid4()}))
+        assert service.metadata(request.id).current_version == request.id
