@@ -365,7 +365,7 @@ def test_registered_broker_authorizes_before_resolving_provider(secrets):
         broker.execute(request.integration_id, "collect")
 
 
-def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets):
+def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets, monkeypatch):
     from riswan_app.secret_routing import SecretDestination, SecretRouting
     from riswan_platform.secrets.providers import AWSNamespace, Binding, Capability, Entry, Registry
 
@@ -406,6 +406,18 @@ def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets):
             ).provider_instance_id
             == binding.instance_id
         )
+
+        with pytest.raises(AccessDenied):
+            configured.bind_existing(legacy.id)
+        for missing in (None, SecretRouting(Registry([], environment="test"), {})):
+            with monkeypatch.context() as patches:
+                patches.setattr(configured, "routing", missing)
+                with pytest.raises(ProviderUnavailable):
+                    configured.rotate(legacy.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        with monkeypatch.context() as patches:
+            patches.setattr(service.provider, "name", "unexpected-provider")
+            with pytest.raises(ProviderUnavailable):
+                configured.rotate(legacy.id, RotationRequest(operation_id=uuid4(), value=VALUE))
 
 
 def test_native_rotation_retry_reconciles_ambiguous_write_without_replay(secrets):
@@ -575,3 +587,37 @@ def test_secret_provider_and_context_fail_closed(secrets, monkeypatch):
             with pytest.raises(ProviderUnavailable):
                 service.register(request.model_copy(update={"id": uuid4()}))
         assert service.metadata(request.id).current_version == request.id
+
+
+def test_secret_policy_denies_workload_administration(secrets):
+    service, owner, worker, org, _ = secrets
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        service.register(request)
+        with pytest.raises(AccessDenied):
+            service.bind_existing(request.id)
+
+    principal, context = contexts(service, worker, org)
+    with principal, context, pytest.raises(AccessDenied):
+        service.metadata(request.id)
+
+
+def test_failed_registration_cannot_rebind_to_a_different_secret_kind(secrets, monkeypatch):
+    service, owner, _, org, _ = secrets
+    assert service.provider is not None
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+
+    def fail_before_write(*args):
+        raise TimeoutError(VALUE)
+
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        with monkeypatch.context() as patches:
+            patches.setattr(service.provider, "put", fail_before_write)
+            with pytest.raises(ProviderUnavailable):
+                service.register(request)
+        with pytest.raises(SecretError, match="registration conflict"):
+            service.register(request.model_copy(update={"kind": "oauth_refresh"}))
+        assert service.metadata(request.id).status == "created"
+        assert service.register(request).status == "active"
