@@ -216,7 +216,11 @@ class HostedPostgresCases:
                 self.store.memory_feedback(case_id, Feedback.model_validate(body))
                 return 201, {"recorded": True}
             body["reviewer"] = require_context().actor_id
-            self.store.memory_feedback(case_id, AnalystFeedback.model_validate(body))
+            self.store.memory_feedback(
+                case_id,
+                AnalystFeedback.model_validate(body),
+                parent=self._risk_lineage(guard, case_id),
+            )
             report = self.store.get(case_id)
             return 201, {"id": report.id, "created_at": report.created_at}
         if method == "DELETE" and suffix == "/memory":

@@ -546,6 +546,10 @@ def test_hosted_postgres_case_preview(
         == 201
     )
     assert send(risk_path, tenant=a)[1]["reviews"][0]["reviewer"] != "client-claim"
+    assert any(
+        item["trigger"] == "analyst_review" for item in send(history, tenant=a)[1]["assessments"]
+    )
+
     assert (
         send(
             memory_path + "/feedback",

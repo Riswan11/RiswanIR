@@ -362,25 +362,7 @@ class PostgresCases(CaseReader):
                 self._restore(staging, artifacts)
                 if not evidence_store.verify(staging, case, report).valid:
                     raise ValueError("Risk reassessment requires verified investigation evidence.")
-                if parent is not None:
-                    parent_report, parent_artifacts = self._bundle(db, parent)
-                    self._compiler.seed_transient_parent(staging, parent_report)
-                    risk = parent_artifacts["risk_assessments"]
-                    # SQLite ordinals identify rows only within the transient workspace.
-                    staging.executemany(
-                        ARTIFACT_INSERTS["risk_assessments"],
-                        [
-                            (
-                                None,
-                                row["id"],
-                                parent,
-                                row["kind"],
-                                row["subject_id"],
-                                row["archive"],
-                            )
-                            for row in risk
-                        ],
-                    )
+                self._stage_parent_risk(db, staging, parent)
                 postgres_memory.restore_history(db, staging, case, for_write=True)
                 assessed = self._compiler._score_existing_risk(
                     staging, case, datetime.now(UTC).isoformat(), "reassessment", request
@@ -394,6 +376,21 @@ class PostgresCases(CaseReader):
                 ]
             postgres_intelligence.append_risk(db, context, case, added)
             return assessed
+
+    def _stage_parent_risk(self, db, staging, parent):
+        if parent is None:
+            return
+        report, artifacts = self._bundle(db, parent)
+        self._compiler.seed_transient_parent(staging, report)
+        archives = artifacts["risk_assessments"]
+        postgres_intelligence.parse_risk(parent, archives)
+        staging.executemany(
+            ARTIFACT_INSERTS["risk_assessments"],
+            [
+                (None, row["id"], parent, row["kind"], row["subject_id"], row["archive"])
+                for row in archives
+            ],
+        )
 
     def risk_assessment(
         self, case_id: str, assessment_id: str, *, replay: bool, scoped: bool = False
@@ -677,7 +674,9 @@ class PostgresCases(CaseReader):
         staging.execute("INSERT INTO main.investigations VALUES (?, ?, '{}')", (case, timestamp))
         PostgresCases._stage_memory(staging, case, archive)
 
-    def memory_feedback(self, case: str, feedback: Feedback | AnalystFeedback) -> None:
+    def memory_feedback(
+        self, case: str, feedback: Feedback | AnalystFeedback, *, parent: str | None = None
+    ) -> None:
         with self._scope.transaction() as (db, context), self._compiler.connect() as staging:
             self._lock_case(db, case)
             if not isinstance(feedback, AnalystFeedback):
@@ -700,6 +699,10 @@ class PostgresCases(CaseReader):
             config = memory_policy()
             current = datetime.now(UTC).isoformat()
             if isinstance(feedback, AnalystFeedback):
+                if report.previous_investigation_id != parent:
+                    raise NotFoundError("Review lineage unavailable.")
+                self._stage_parent_risk(db, staging, parent)
+                previous = {row["id"] for row in artifacts["risk_assessments"]}
                 staging.execute(
                     """INSERT INTO main.reviews(investigation_id, reviewer, disposition, notes, created_at)
                     VALUES (?, ?, ?, ?, ?)""",
@@ -713,6 +716,17 @@ class PostgresCases(CaseReader):
                     and not verification.expired_raw
                 ):
                     capture_review(staging, case, feedback.disposition, config, current)
+                self._compiler._score_existing_risk(staging, case, current, "analyst_review")
+                postgres_intelligence.append_risk(
+                    db,
+                    context,
+                    case,
+                    [
+                        dict(row)
+                        for row in staging.execute(ARTIFACT_QUERIES["risk_assessments"])
+                        if row["investigation_id"] == case and row["id"] not in previous
+                    ],
+                )
             else:
                 promote(staging, report, feedback, config, current)
             postgres_memory.append_history(db, context, staging, case, before)
