@@ -291,7 +291,10 @@ class Application:
             (Permission.DETECTION_READ, ("detection",)),
         ):
             try:
-                enforcement.require(action, ScopeType.INVESTIGATION, case_id)
+                if action == Permission.EXPORT:
+                    self._evidence_scope(case_id, action)
+                else:
+                    enforcement.require(action, ScopeType.INVESTIGATION, case_id)
             except AccessDenied:
                 for field in fields:
                     report.pop(field, None)

@@ -1,5 +1,6 @@
 """Compose the OIDC runtime with its separate identity database."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ def compose_identity(
     *,
     control_db: Path | None = None,
     postgres_case_pool: Any = None,
+    enable_postgres_preview: bool = False,
     postgres_identity_pool: Any = None,
     postgres_control_pool: Any = None,
     hosted_db: Path | None = None,
@@ -43,6 +45,18 @@ def compose_identity(
     collection_config: Path | None = None,
     secrets_kms_key: str | None = None,
 ) -> IdentityApplication:
+    if postgres_case_pool is not None and (
+        enable_postgres_preview is not True
+        or os.getenv("RISWAN_IR_ENV") != "development"
+        or os.getenv("SENTINELFORGE_ENV", "development") != "development"
+        or any(
+            item is not None
+            for item in (secrets_region, secrets_kms_key, secrets_providers, collection_config)
+        )
+    ):
+        raise ValueError(
+            "PostgreSQL preview requires explicit development opt-in without providers."
+        )
     if postgres_control_pool is not None and (
         postgres_identity_pool is None
         or control_db is not None

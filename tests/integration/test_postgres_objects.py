@@ -190,6 +190,7 @@ def hosted_postgres(
     path = tmp_path / "oidc.json"
     path.write_text(configuration.model_dump_json(), encoding="utf-8")
     monkeypatch.setattr(identity_runtime, "OIDCProvider", FixtureProvider)
+    monkeypatch.setenv("RISWAN_IR_ENV", "development")
     monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: datetime.now(UTC).isoformat())
     app = identity_runtime.compose_identity(
         path,
@@ -197,6 +198,7 @@ def hosted_postgres(
         tmp_path / "workstation.sqlite3",
         postgres_control_pool=postgres_control_pool,
         postgres_case_pool=postgres_pool,
+        enable_postgres_preview=True,
         postgres_identity_pool=postgres_identity_pool,
     )
     alice, _ = login(app, "alice")
@@ -320,6 +322,7 @@ def test_hosted_postgres_case_preview(
         tmp_path / "workstation.sqlite3",
         postgres_control_pool=postgres_control_pool,
         postgres_case_pool=postgres_pool,
+        enable_postgres_preview=True,
         postgres_identity_pool=postgres_identity_pool,
     )
     assert (
@@ -1485,3 +1488,67 @@ def test_postgres_role_scope_and_member_role_publication(hosted_postgres):
                     datetime.now(UTC),
                 ),
             )
+
+
+@pytest.mark.parametrize(
+    ("environment", "legacy", "enabled", "provider"),
+    [
+        (None, None, True, False),
+        ("development", None, False, False),
+        ("production", None, True, False),
+        ("development", "production", True, False),
+        ("development", None, True, True),
+    ],
+)
+def test_postgres_preview_gate_precedes_config_and_database_access(
+    environment, legacy, enabled, provider, tmp_path, monkeypatch
+):
+    from riswan_app.identity_runtime import compose_identity
+
+    for name, value in (("RISWAN_IR_ENV", environment), ("SENTINELFORGE_ENV", legacy)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match="explicit development opt-in"):
+        compose_identity(
+            tmp_path / "missing-oidc.json",
+            tmp_path / "identity.sqlite3",
+            tmp_path / "workstation.sqlite3",
+            control_db=tmp_path / "control.sqlite3",
+            postgres_case_pool=object(),
+            enable_postgres_preview=enabled,
+            secrets_providers=tmp_path / "providers.json" if provider else None,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_postgres_case_report_honors_evidence_export_denial(
+    hosted_postgres, request_payload, monkeypatch
+):
+    from dataclasses import replace
+
+    from riswan_platform.authorization import Permission, ScopeType
+
+    app, send, _, _, tenant, _ = hosted_postgres
+    status, created = send("/v1/investigations", "POST", tenant=tenant, payload=request_payload)
+    assert status == 201
+    detail = f"/v1/investigations/{created['id']}"
+    assert send(detail, tenant=tenant)[1]["canonical_events"]
+    evaluator = app._authenticated_routes.tenancy.evaluator
+    evaluate = evaluator.evaluate
+
+    def deny_evidence_export(request):
+        decision = evaluate(request)
+        if (
+            request.action == Permission.EXPORT
+            and request.resource.scope.kind == ScopeType.EVIDENCE
+        ):
+            return replace(decision, effect="deny")
+        return decision
+
+    monkeypatch.setattr(evaluator, "evaluate", deny_evidence_export)
+    status, report = send(detail, tenant=tenant)
+    assert status == 200
+    assert "canonical_events" not in report
+    assert send(detail + "/events", tenant=tenant)[0] == 404

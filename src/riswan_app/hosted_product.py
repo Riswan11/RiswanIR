@@ -280,14 +280,7 @@ class HostedPostgresCases:
         if suffix == "/evidence":
             return 200, [item.payload() for item in report.evidence]
         if suffix == "/events":
-            guard.require(Permission.EXPORT, scope.kind, scope.id)
-            for event_id in self.store.evidence_ids(case_id):
-                guard.require(
-                    Permission.EXPORT,
-                    ScopeType.EVIDENCE,
-                    f"{case_id}/normalized/{event_id}",
-                    parent=scope,
-                )
+            self._evidence(guard, scope, permission=Permission.EXPORT)
             raw_query = env.get("QUERY_STRING", "")
             if not raw_query:
                 return 200, self.store.events(case_id)
@@ -346,7 +339,10 @@ class HostedPostgresCases:
             (Permission.DETECTION_READ, "detection"),
         ):
             try:
-                guard.require(action, scope.kind, scope.id)
+                if action == Permission.EXPORT:
+                    self._evidence(guard, scope, permission=action)
+                else:
+                    guard.require(action, scope.kind, scope.id)
             except AccessDenied:
                 result.pop(field, None)
         if report.previous_investigation_id:
@@ -383,13 +379,18 @@ class HostedPostgresCases:
                 authorized.append(candidate)
         return tuple(authorized)
 
-    def _evidence(self, guard: Enforcement, scope: Scope, *, raw: bool = False) -> None:
-        guard.require(Permission.EVIDENCE, scope.kind, scope.id)
+    def _evidence(
+        self,
+        guard: Enforcement,
+        scope: Scope,
+        *,
+        raw: bool = False,
+        permission: Permission = Permission.EVIDENCE,
+    ) -> None:
+        guard.require(permission, scope.kind, scope.id)
         for item in self.store.evidence_ids(scope.id, raw=raw):
             key = item if raw else f"normalized/{item}"
-            guard.require(
-                Permission.EVIDENCE, ScopeType.EVIDENCE, f"{scope.id}/{key}", parent=scope
-            )
+            guard.require(permission, ScopeType.EVIDENCE, f"{scope.id}/{key}", parent=scope)
 
     def _hold(self, env, case: str, suffix: str):
         from riswan_platform.identity.principal import require_principal
