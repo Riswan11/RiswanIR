@@ -1569,6 +1569,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     record_property,
     caplog,
 ):
+    from dataclasses import replace
     from datetime import UTC, datetime, timedelta
     from unittest.mock import Mock
 
@@ -1581,7 +1582,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     from riswan_platform.authorization.enforcement import AccessDenied
     from riswan_platform.core.context import bind_context
     from riswan_platform.identity.principal import bind_principal
-    from riswan_platform.secrets import CredentialLease, SecretReference
+    from riswan_platform.secrets import CredentialLease, ProviderUnavailable, SecretReference
     from riswan_platform.secrets.providers import (
         Binding,
         Capability,
@@ -1624,6 +1625,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
 
     app = compose()
     value = "synthetic-provider-only-marker"
+    temporary = "synthetic-temporary-credential-marker"
     key, version = str(uuid4()), str(uuid4())
     base = "/v1/secrets"
     secret = f"{base}/{key}"
@@ -1738,9 +1740,22 @@ def test_postgres_secret_lifecycle_and_credential_leases(
             with pytest.raises(AccessDenied):
                 broker.execute(request.integration_id, "unapproved")
             credential.execute.assert_not_called()
+            credential.execute.side_effect = TimeoutError(temporary)
+            with pytest.raises(ProviderUnavailable) as rejected:
+                broker.execute(request.integration_id, "collect")
+            assert temporary not in str(rejected.value)
+            credential.execute.side_effect = None
+            credential.execute.reset_mock()
+
             assert (
                 broker.execute(request.integration_id, "collect") == credential.execute.return_value
             )
+
+        with bind_context(replace(context, product_id="other")):
+            with pytest.raises(AccessDenied):
+                broker.execute(request.integration_id, "collect")
+            with pytest.raises(AccessDenied):
+                service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
 
     with postgres_control_pool.connection() as db, db.transaction(force_rollback=True):
         assert db.execute("SELECT count(*) FROM riswan_control.secret_metadata").fetchone() == (0,)
@@ -1759,7 +1774,8 @@ def test_postgres_secret_lifecycle_and_credential_leases(
             "SELECT operation FROM riswan_control.secret_rotations",
             "SELECT request FROM riswan_control.credential_bindings",
         ):
-            assert value not in str(db.execute(query).fetchall())
+            rows = str(db.execute(query).fetchall())
+            assert value not in rows and temporary not in rows
         db.execute(
             """INSERT INTO riswan_control.secret_versions(secret_id, id, version)
             SELECT %s, md5('plan-version-' || i)::uuid::text,
@@ -1789,6 +1805,12 @@ def test_postgres_secret_lifecycle_and_credential_leases(
         # Make the plan fixture disposable within the surrounding transaction.
         with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
             db.execute("DELETE FROM riswan_control.secret_access_events")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("ALTER TABLE riswan_control.secret_metadata DISABLE ROW LEVEL SECURITY")
+        with pytest.raises(psycopg.errors.CheckViolation), db.transaction():
+            db.execute(
+                "UPDATE riswan_control.secret_metadata SET metadata = '{}' WHERE id = %s", (key,)
+            )
         with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
             db.execute(
                 """UPDATE riswan_control.secret_metadata
@@ -1873,7 +1895,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     assert send(secret, "DELETE")[1]["status"] == "pending_deletion"
     assert send(secret + "/confirm-deletion", "POST")[1]["status"] == "deleted"
     assert not list(tmp_path.glob("*.sqlite3"))
-    assert value not in caplog.text
+    assert value not in caplog.text and temporary not in caplog.text
 
 
 def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkeypatch):

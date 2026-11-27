@@ -6,7 +6,7 @@ from uuid import UUID
 
 from riswan_platform.authorization.enforcement import AccessDenied
 from riswan_platform.identity.models import IdentityType
-from riswan_platform.secrets import CredentialLease
+from riswan_platform.secrets import CredentialLease, ProviderUnavailable
 from riswan_platform.secrets.providers import (
     Capability,
     CredentialProvider,
@@ -67,7 +67,10 @@ class RegisteredCredentialBroker:
             )
             if not self._service.repository.initializes_sqlite_schema:
                 self._persist_binding(registered)
-            lease = provider.execute(registered.request)
+            try:
+                lease = provider.execute(registered.request)
+            except Exception:
+                raise ProviderUnavailable("Credential issuance failed.") from None
             if lease.expires_at <= self._service.clock():
                 raise AccessDenied
             if not self._service.repository.initializes_sqlite_schema:
