@@ -84,6 +84,8 @@ def compose_identity(
         raise ValueError("Configure a KMS key and region for the hosted secret provider.")
     if (secrets_providers is not None or collection_config is not None) and control_db is None:
         raise ValueError("Hosted providers require a control database.")
+    if preview_secret_routing is not None:
+        preview_secret_routing.require_development_only()
     if not has_crypto:
         raise ValueError("Install the identity extra for OIDC cryptographic verification.")
     if postgres_case_pool is not None:

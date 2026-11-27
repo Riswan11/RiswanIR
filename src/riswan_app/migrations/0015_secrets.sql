@@ -8,10 +8,10 @@ CREATE TABLE riswan_control.secret_metadata (
  product text NOT NULL, metadata text NOT NULL,
  active_version text GENERATED ALWAYS AS (metadata::jsonb->>'current_version') STORED,
  provider_instance text GENERATED ALWAYS AS (metadata::jsonb->>'provider_instance_id') STORED,
- PRIMARY KEY (tenant_id, product, id),
+ PRIMARY KEY (tenant_id, product, id), UNIQUE (tenant_id, id),
  FOREIGN KEY (tenant_id, product, provider_instance) REFERENCES riswan_control.secret_provider_bindings,
- CHECK (metadata::jsonb->>'id' = id AND metadata::jsonb->>'tenant_id' = tenant_id
-   AND metadata::jsonb->>'product_id' = product)
+ CHECK (metadata::jsonb->>'id' IS NOT DISTINCT FROM id AND metadata::jsonb->>'tenant_id' IS NOT DISTINCT FROM tenant_id
+   AND metadata::jsonb->>'product_id' IS NOT DISTINCT FROM product)
 );
 CREATE TABLE riswan_control.secret_versions (
  secret_id text NOT NULL, id text NOT NULL, version text NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE riswan_control.secret_versions (
  rowid bigint GENERATED ALWAYS AS IDENTITY,
  PRIMARY KEY (tenant_id, product, secret_id, id),
  FOREIGN KEY (tenant_id, product, secret_id) REFERENCES riswan_control.secret_metadata,
- CHECK (version::jsonb->>'id' = id)
+ CHECK (version::jsonb->>'id' IS NOT DISTINCT FROM id)
 );
 ALTER TABLE riswan_control.secret_metadata ADD CONSTRAINT secret_active_version
  FOREIGN KEY (tenant_id, product, id, active_version)
@@ -31,7 +31,7 @@ CREATE TABLE riswan_control.secret_rotations (
  product text NOT NULL DEFAULT current_setting('riswan.secret_product', true),
  PRIMARY KEY (tenant_id, product, secret_id, id),
  FOREIGN KEY (tenant_id, product, secret_id) REFERENCES riswan_control.secret_metadata,
- CHECK (operation::jsonb->>'id' = id AND operation::jsonb->>'secret_id' = secret_id)
+ CHECK (operation::jsonb->>'id' IS NOT DISTINCT FROM id AND operation::jsonb->>'secret_id' IS NOT DISTINCT FROM secret_id)
 );
 CREATE TABLE riswan_control.secret_consumer_policies (
  secret_id text NOT NULL, workload_id text NOT NULL, purpose text NOT NULL,
@@ -41,13 +41,13 @@ CREATE TABLE riswan_control.secret_consumer_policies (
  UNIQUE (secret_id, workload_id, purpose, tenant_id, product),
  FOREIGN KEY (tenant_id, product, secret_id) REFERENCES riswan_control.secret_metadata,
  FOREIGN KEY (tenant_id, workload_id) REFERENCES riswan_control.organization_memberships,
- CHECK (policy::jsonb->>'workload_id' = workload_id AND policy::jsonb->>'purpose' = purpose)
+ CHECK (policy::jsonb->>'workload_id' IS NOT DISTINCT FROM workload_id AND policy::jsonb->>'purpose' IS NOT DISTINCT FROM purpose)
 );
 CREATE TABLE riswan_control.secret_access_events (
  sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  secret_id text NOT NULL, tenant_id text NOT NULL REFERENCES riswan_control.tenants, event text NOT NULL,
  product text GENERATED ALWAYS AS (event::jsonb->>'product_id') STORED NOT NULL,
- CHECK (event::jsonb->>'secret_id' = secret_id AND event::jsonb->>'tenant_id' = tenant_id)
+ CHECK (event::jsonb->>'secret_id' IS NOT DISTINCT FROM secret_id AND event::jsonb->>'tenant_id' IS NOT DISTINCT FROM tenant_id)
 );
 CREATE INDEX secret_scoped_audit ON riswan_control.secret_access_events
  (tenant_id, product, secret_id, sequence DESC);
@@ -70,7 +70,7 @@ END;
 $ddl$;
 CREATE POLICY secret_audit_actor ON riswan_control.secret_access_events AS RESTRICTIVE
  FOR INSERT TO riswan_control_runtime WITH CHECK (
-  event::jsonb->>'actor_id' = nullif(current_setting('riswan.control_actor',true),'')
+  event::jsonb->>'actor_id' IS NOT DISTINCT FROM nullif(current_setting('riswan.control_actor',true),'')
  );
 GRANT UPDATE (metadata) ON riswan_control.secret_metadata TO riswan_control_runtime;
 GRANT UPDATE (version) ON riswan_control.secret_versions TO riswan_control_runtime;
@@ -84,7 +84,7 @@ CREATE TABLE riswan_control.credential_bindings (
  PRIMARY KEY (tenant_id, product, integration_id, workload_id, membership_joined),
  FOREIGN KEY (tenant_id, product, instance_id) REFERENCES riswan_control.secret_provider_bindings,
  FOREIGN KEY (tenant_id, workload_id) REFERENCES riswan_control.organization_memberships,
- CHECK (request::jsonb->>'integration_id' = integration_id AND request::jsonb->>'workload_id' = workload_id)
+ CHECK (request::jsonb->>'integration_id' IS NOT DISTINCT FROM integration_id AND request::jsonb->>'workload_id' IS NOT DISTINCT FROM workload_id)
 );
 CREATE TABLE riswan_control.credential_leases (
  tenant_id text NOT NULL, product text NOT NULL, integration_id text NOT NULL,

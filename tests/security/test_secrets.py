@@ -468,3 +468,64 @@ def test_native_rotation_retry_reconciles_ambiguous_write_without_replay(secrets
         assert configured.versions(request.id)[0].native_version == "native-1"
     client.set_secret.assert_called_once()
     assert VALUE.encode() not in service.repository.path.read_bytes()
+
+
+def test_secret_lifecycle_rejects_invalid_transitions(secrets, monkeypatch, caplog):
+    from riswan_platform.secrets import Update
+
+    service, owner, worker, org, now = secrets
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    assert service.provider is not None
+    provider = service.provider
+    expiry = now[0] + timedelta(hours=1)
+    with principal, context:
+        active = service.register(request)
+        assert service.register(request) == active
+        with pytest.raises(AccessDenied):
+            service.delete(request.id, confirm=True)
+        with pytest.raises(AccessDenied):
+            service.rollback(request.id, request.id)
+        with pytest.raises(AccessDenied):
+            service.rollback(request.id, uuid4())
+        with pytest.raises(SecretError):
+            service.update(request.id, Update(name=None))
+        changed = service.update(
+            request.id, Update.model_validate({"rotation": {"interval_days": 2}})
+        )
+        assert changed.next_rotation_at == changed.last_rotated_at + timedelta(days=2)
+        policy = SecretAccessPolicy(
+            workload_id=worker.identity.identity_id, purpose="read", expires_at=expiry
+        )
+        service.set_policy(request.id, policy)
+        with pytest.raises(AccessDenied):
+            service.set_policy(
+                request.id, policy.model_copy(update={"workload_id": owner.identity.identity_id})
+            )
+
+    def provider_timeout(*args):
+        raise TimeoutError(VALUE)
+
+    with monkeypatch.context() as patches:
+        patches.setattr(provider, "get", provider_timeout)
+        principal, context = contexts(service, worker, org)
+        with principal, context, pytest.raises(ProviderUnavailable) as failure:
+            service.use(SecretReference(id=request.id), "read", lambda _: None)
+        assert VALUE not in str(failure.value)
+
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        service.set_policy(request.id, policy, revoke=True)
+        revoked = service.revoke(request.id)
+        assert service.revoke(request.id) == revoked
+        with pytest.raises(AccessDenied):
+            service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        with pytest.raises(AccessDenied):
+            service.update(request.id, Update(name="Changed"))
+        service.delete(request.id)
+        with monkeypatch.context() as patches:
+            patches.setattr(provider, "deleted", lambda _: False)
+            assert service.delete(request.id, confirm=True).status == "pending_deletion"
+        deleted = service.delete(request.id, confirm=True)
+        assert service.delete(request.id) == deleted
+    assert VALUE not in caplog.text

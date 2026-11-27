@@ -67,7 +67,8 @@ membership. The existing enrollment timestamp check invalidates grants and
 credential bindings after re-enrollment.
 
 The development preview accepts a trusted, in-process preview_secret_routing
-object when all three PostgreSQL pools are configured. It still requires the
+object when all three PostgreSQL pools are configured. Only development-only
+adapters are accepted. It still requires the
 explicit development gate. CLI and environment-driven cloud provider
 configuration remain disabled for the PostgreSQL preview. The existing SDK
 contract and registry continue to resolve capabilities. The authorized
@@ -81,5 +82,8 @@ metadata contract. Authenticated secret endpoints return metadata only. Audit
 rows require the session-bound actor and grant no UPDATE or DELETE privilege.
 The control transaction preserves the existing writer ordering for rotation and
 policy changes. Database transactions cannot undo cloud provider calls.
-Provider retry uses existing operation and native version references. Test
+Provider retry uses existing operation and native version references. Deletion
+records an audited pending intent before provider calls so a lost completion
+audit can be reconciled without reopening access. Secret IDs cannot be reused
+across products in the same tenant because provider slot keys predate product scoping. Test
 coverage uses synthetic provider operations and localhost PostgreSQL.

@@ -646,6 +646,19 @@ class Secrets:
 
     def delete(self, key: UUID, *, confirm: bool = False) -> SecretMetadata:
         action = "secret.deleted" if confirm else "secret.deletion.scheduled"
+        if not confirm:
+            with self._operation(
+                key, Permission.SECRET_DELETE, "secret.deletion.reserved"
+            ) as context:
+                item = self._load(context, key)
+                if item.status == Status.DELETED:
+                    return item
+                if item.status != Status.PENDING_DELETION:
+                    item = item.model_copy(
+                        update={"status": Status.PENDING_DELETION, "updated_at": self.clock()}
+                    )
+                    with self.repository.atomic() as db:
+                        self._save(db, item)
         with self._operation(key, Permission.SECRET_DELETE, action) as context:
             item = self._load(context, key)
             if item.status == Status.DELETED:
@@ -660,10 +673,6 @@ class Secrets:
                     )
                 ]
                 if not confirm:
-                    item = item.model_copy(
-                        update={"status": Status.PENDING_DELETION, "updated_at": self.clock()}
-                    )
-                    self._save(db, item)
                     for version in versions:
                         self._provider(item, Capability.SECRET_DELETE).schedule_delete(
                             self._key(item, version)

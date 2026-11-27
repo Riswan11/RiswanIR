@@ -27,7 +27,12 @@ def postgres_pool():
         admin.execute("CREATE ROLE riswan_identity_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("CREATE ROLE riswan_control_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("GRANT CREATE ON DATABASE riswan TO riswan_migration")
+    from riswan_app import postgres_scope
+
     with psycopg.connect(connection + " user=riswan_migration") as owner:
+        with pytest.MonkeyPatch.context() as patches:
+            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:14])
+            migrate(owner)
         migrate(owner)
         migrate(owner)
         assert owner.execute(
@@ -1562,6 +1567,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     tmp_path,
     monkeypatch,
     record_property,
+    caplog,
 ):
     from datetime import UTC, datetime, timedelta
     from unittest.mock import Mock
@@ -1790,6 +1796,22 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 WHERE id = %s""",
                 (str(uuid4()), key),
             )
+    drift = GCPNamespace(project="different-fixture", location="global")
+    drifted = SecretRouting(
+        Registry(
+            [Entry(binding.model_copy(update={"namespace": drift}), provider)], environment="test"
+        ),
+        {(tenant, "ir"): SecretDestination(instance, drift)},
+    )
+    with monkeypatch.context() as patches:
+        patches.setattr(service, "routing", drifted)
+        patches.setattr(provider, "put", Mock())
+        assert (
+            send(secret + "/rotate", "POST", {"operation_id": str(uuid4()), "value": value})[0]
+            == 404
+        )
+        provider.put.assert_not_called()
+
     candidate = str(uuid4())
     save = service._save
 
@@ -1834,6 +1856,59 @@ def test_postgres_secret_lifecycle_and_credential_leases(
             broker.execute(request.integration_id, "collect")
     credential.execute.assert_called_once_with(request)
     assert send(secret + "/revoke", "POST")[1]["status"] == "revoked"
+    audit = service._audit
+
+    def fail_delete_completion(context, secret_id, action, outcome, reason, **kwargs):
+        if action == "secret.deletion.scheduled" and outcome == "success":
+            raise psycopg.OperationalError("simulated deletion audit failure")
+        audit(context, secret_id, action, outcome, reason, **kwargs)
+
+    with monkeypatch.context() as patches:
+        patches.setattr(service, "_audit", fail_delete_completion)
+        assert send(secret, "DELETE")[0] == 503
+    assert send(secret)[1]["status"] == "pending_deletion"
+    assert any(
+        event["action"] == "secret.deletion.reserved" for event in send(secret + "/audit")[1]
+    )
     assert send(secret, "DELETE")[1]["status"] == "pending_deletion"
     assert send(secret + "/confirm-deletion", "POST")[1]["status"] == "deleted"
     assert not list(tmp_path.glob("*.sqlite3"))
+    assert value not in caplog.text
+
+
+def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkeypatch):
+    from riswan_app.identity_runtime import compose_identity
+    from riswan_app.secret_providers import MemoryProvider
+    from riswan_app.secret_routing import SecretDestination, SecretRouting
+    from riswan_platform.secrets.providers import Binding, Capability, Entry, GCPNamespace, Registry
+
+    class ProductionAdapter(MemoryProvider):
+        development_only = False
+
+    monkeypatch.setenv("RISWAN_IR_ENV", "development")
+    monkeypatch.delenv("SENTINELFORGE_ENV", raising=False)
+    tenant, instance = uuid4(), uuid4()
+    namespace = GCPNamespace(project="fixture", location="global")
+    binding = Binding(
+        instance_id=instance,
+        tenant_id=tenant,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.SECRET_WRITE},
+    )
+    routing = SecretRouting(
+        Registry([Entry(binding, ProductionAdapter())], environment="test"),
+        {(tenant, "ir"): SecretDestination(instance, namespace)},
+    )
+    with pytest.raises(ValueError, match="development-only secret adapters"):
+        compose_identity(
+            tmp_path / "missing-config.json",
+            None,
+            tmp_path / "workstation.sqlite3",
+            postgres_case_pool=object(),
+            postgres_control_pool=object(),
+            postgres_identity_pool=object(),
+            enable_postgres_preview=True,
+            preview_secret_routing=routing,
+        )
+    assert list(tmp_path.iterdir()) == []
