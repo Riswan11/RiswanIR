@@ -23,6 +23,7 @@ MIGRATIONS = (
     "0011_memory_snapshots.sql",
     "0012_memory_history.sql",
     "0013_platform_identity.sql",
+    "0014_platform_control.sql",
 )
 
 

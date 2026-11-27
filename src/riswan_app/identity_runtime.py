@@ -19,6 +19,7 @@ from .hosted_collection import CollectionAPI, load_collections
 from .hosted_product import HostedPostgresCases, HostedProduct
 from .identity_repository import SQLiteIdentityRepository
 from .postgres_cases import PostgresCases
+from .postgres_control import PostgresAuthorizationRepository
 from .postgres_identity import PostgresIdentityRepository
 from .secret_api import SecretAPI
 from .secret_providers import AWSSecretsProvider
@@ -35,12 +36,23 @@ def compose_identity(
     control_db: Path | None = None,
     postgres_case_pool: Any = None,
     postgres_identity_pool: Any = None,
+    postgres_control_pool: Any = None,
     hosted_db: Path | None = None,
     secrets_region: str | None = None,
     secrets_providers: Path | None = None,
     collection_config: Path | None = None,
     secrets_kms_key: str | None = None,
 ) -> IdentityApplication:
+    if postgres_control_pool is not None and (
+        postgres_identity_pool is None
+        or control_db is not None
+        or secrets_region is not None
+        or secrets_providers is not None
+        or collection_config is not None
+    ):
+        raise ValueError(
+            "PostgreSQL control requires PostgreSQL identity and excludes legacy controls."
+        )
     if postgres_identity_pool is not None:
         if identity_db is not None or postgres_case_pool is None:
             raise ValueError(
@@ -57,7 +69,11 @@ def compose_identity(
     if not has_crypto:
         raise ValueError("Install the identity extra for OIDC cryptographic verification.")
     if postgres_case_pool is not None:
-        if control_db is None or hosted_db is not None or collection_config is not None:
+        if (
+            (control_db is None and postgres_control_pool is None)
+            or hosted_db is not None
+            or collection_config is not None
+        ):
             raise ValueError(
                 "PostgreSQL preview requires control storage and no SQLite product or collector."
             )
@@ -84,9 +100,14 @@ def compose_identity(
         else SQLiteIdentityRepository(identity_db)
     )
     routes = None
-    if control_db is not None:
+    if control_db is not None or postgres_control_pool is not None:
+        authorization = (
+            AuthorizationRepository(control_db)
+            if control_db is not None
+            else PostgresAuthorizationRepository(postgres_control_pool)
+        )
         tenancy = Tenancy(
-            AuthorizationRepository(control_db),
+            authorization,
             identities.is_active_human,
             identities.is_active_workload,
         )
@@ -114,13 +135,15 @@ def compose_identity(
                 raise ValueError("Hosted product storage unavailable.")
             local_store = Store(hosted_db, hosted=True)
             hosted = HostedProduct(tenancy, local_store)
-        service = Secrets(tenancy, fallback, environment="production", routing=routing)
-        secret_routes = SecretAPI(service) if fallback or routing else None
-        collections = (
-            CollectionAPI(service, load_collections(collection_config, service, local_store))
-            if collection_config and local_store is not None
-            else None
-        )
+        secret_routes = None
+        collections = None
+        if control_db is not None:
+            service = Secrets(tenancy, fallback, environment="production", routing=routing)
+            secret_routes = SecretAPI(service) if fallback or routing else None
+            if collection_config and local_store is not None:
+                collections = CollectionAPI(
+                    service, load_collections(collection_config, service, local_store)
+                )
         routes = TenantAPI(tenancy, hosted, settings.origin, secret_routes, collections)
     return IdentityApplication(
         IdentityService(

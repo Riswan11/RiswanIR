@@ -25,13 +25,14 @@ def postgres_pool():
         admin.execute("CREATE ROLE riswan_migration LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("CREATE ROLE riswan_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("CREATE ROLE riswan_identity_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
+        admin.execute("CREATE ROLE riswan_control_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("GRANT CREATE ON DATABASE riswan TO riswan_migration")
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         migrate(owner)
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 14)]
+        ).fetchall() == [(version,) for version in range(1, 15)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -49,6 +50,19 @@ def postgres_identity_pool(postgres_pool):
         "host=127.0.0.1 port=5432 dbname=riswan user=riswan_identity_runtime",
         min_size=1,
         max_size=1,
+        open=False,
+    ) as pool:
+        yield pool
+
+
+@pytest.fixture(scope="module")
+def postgres_control_pool(postgres_pool):
+    from psycopg_pool import ConnectionPool
+
+    with ConnectionPool(
+        "host=127.0.0.1 port=5432 dbname=riswan user=riswan_control_runtime",
+        min_size=1,
+        max_size=3,
         open=False,
     ) as pool:
         yield pool
@@ -154,7 +168,9 @@ def test_postgres_case_ownership_scopes_directory_and_sql(postgres_pool):
 
 
 @pytest.fixture
-def hosted_postgres(postgres_pool, postgres_identity_pool, tmp_path, monkeypatch):
+def hosted_postgres(
+    postgres_pool, postgres_identity_pool, postgres_control_pool, tmp_path, monkeypatch
+):
     from datetime import UTC, datetime
 
     from riswan_app import identity_runtime
@@ -179,7 +195,7 @@ def hosted_postgres(postgres_pool, postgres_identity_pool, tmp_path, monkeypatch
         path,
         None,
         tmp_path / "workstation.sqlite3",
-        control_db=tmp_path / "control.sqlite3",
+        postgres_control_pool=postgres_control_pool,
         postgres_case_pool=postgres_pool,
         postgres_identity_pool=postgres_identity_pool,
     )
@@ -208,7 +224,13 @@ def hosted_postgres(postgres_pool, postgres_identity_pool, tmp_path, monkeypatch
 
 
 def test_hosted_postgres_case_preview(
-    postgres_pool, postgres_identity_pool, hosted_postgres, tmp_path, monkeypatch, request_payload
+    postgres_pool,
+    postgres_identity_pool,
+    postgres_control_pool,
+    hosted_postgres,
+    tmp_path,
+    monkeypatch,
+    request_payload,
 ):
     from urllib.parse import urlencode
 
@@ -296,7 +318,7 @@ def test_hosted_postgres_case_preview(
         path,
         None,
         tmp_path / "workstation.sqlite3",
-        control_db=tmp_path / "control.sqlite3",
+        postgres_control_pool=postgres_control_pool,
         postgres_case_pool=postgres_pool,
         postgres_identity_pool=postgres_identity_pool,
     )
@@ -672,9 +694,7 @@ def test_hosted_postgres_case_preview(
         match["investigation_id"] != assessed_case["id"]
         for match in send(current_memory, tenant=a)[1]["similar_investigations"]
     )
-    assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
-        "control.sqlite3",
-    ]
+    assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == []
 
 
 @pytest.mark.parametrize(

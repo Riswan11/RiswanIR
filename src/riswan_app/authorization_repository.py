@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from riswan_platform.authorization import (
@@ -28,6 +29,11 @@ from riswan_platform.authorization.enforcement import AccessDenied
 
 
 class AuthorizationRepository:
+    initializes_sqlite_schema = True
+
+    def bind_scope(self, tenant: str, organization: str | None = None) -> None:
+        """SQLite scope is enforced by the trusted service predicates."""
+
     def __init__(self, path: Path):
         self.path = path
         if os.name == "posix":
@@ -66,7 +72,7 @@ class AuthorizationRepository:
                 db.commit()
 
     @contextmanager
-    def atomic(self) -> Iterator[sqlite3.Connection]:
+    def atomic(self) -> Iterator[Any]:
         """Roll back a business mutation while retaining outer authorization audit entries."""
         with self.transaction(), self._connection() as db:
             db.execute("SAVEPOINT control_mutation")
@@ -79,7 +85,7 @@ class AuthorizationRepository:
                 db.execute("RELEASE control_mutation")
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Iterator[Any]:
         transaction = self._transaction.get()
         if transaction is not None:
             yield transaction
@@ -99,7 +105,8 @@ class AuthorizationRepository:
                 )
             else:
                 db.execute(
-                    "INSERT OR REPLACE INTO authorization_snapshots VALUES (?, ?, ?)",
+                    """INSERT INTO authorization_snapshots VALUES (?, ?, ?)
+                    ON CONFLICT(actor_id, tenant_id) DO UPDATE SET policy = excluded.policy""",
                     (str(actor_id), str(tenant_id), json.dumps(asdict(policy), default=str)),
                 )
 
@@ -137,7 +144,7 @@ class AuthorizationRepository:
     def record(self, event_type: str, decision: Decision) -> None:
         with self._connection() as db:
             db.execute(
-                "INSERT INTO authorization_audit_events VALUES (?, ?, ?)",
+                "INSERT INTO authorization_audit_events (decision_id, event_type, decision) VALUES (?, ?, ?)",
                 (str(decision.decision_id), event_type, json.dumps(asdict(decision), default=str)),
             )
 
@@ -220,10 +227,11 @@ class AuthorizationRepository:
                 )
             else:
                 assignments += (replace(assignment, grantor_id=actor, created_at=now),)
-            self.record(
-                "platform.authorization.role_revoked"
-                if revoke
-                else "platform.authorization.role_assigned",
-                replace(decision, decision_id=uuid4(), resource_id=str(target)),
-            )
-            self.replace_snapshot(target, tenant, replace(recipient, assignments=assignments))
+            with self.atomic():
+                self.record(
+                    "platform.authorization.role_revoked"
+                    if revoke
+                    else "platform.authorization.role_assigned",
+                    replace(decision, decision_id=uuid4(), resource_id=str(target)),
+                )
+                self.replace_snapshot(target, tenant, replace(recipient, assignments=assignments))

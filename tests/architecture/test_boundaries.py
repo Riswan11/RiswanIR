@@ -152,6 +152,13 @@ def test_collection_and_pure_domain_do_not_access_owned_tables_directly():
 def test_table_writes_stay_with_the_owners():
     statements = {}
     owners = {
+        "riswan_control.authorization_snapshots": "riswan_app.authorization_repository",
+        "riswan_control.authorization_audit_events": "riswan_app.authorization_repository",
+        "riswan_control.organizations": "riswan_app.tenancy",
+        "riswan_control.tenants": "riswan_app.tenancy",
+        "riswan_control.organization_memberships": "riswan_app.tenancy",
+        "riswan_control.organization_invitations": "riswan_app.tenancy",
+        "riswan_control.organization_audit_events": "riswan_app.tenancy",
         "riswan_auth.identities": "riswan_app.identity_repository",
         "riswan_auth.identity_provider_links": "riswan_app.identity_repository",
         "riswan_auth.identity_sessions": "riswan_app.identity_repository",
