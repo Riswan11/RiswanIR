@@ -341,6 +341,12 @@ class PostgresCases(CaseReader):
     def reassess(self, case: str, request: Reassessment, *, parent: str | None) -> Assessment:
         with self._scope.transaction() as (db, context):
             self._lock_case(db, case)
+            owner = db.execute(
+                "SELECT parent_id FROM riswan_data.investigations WHERE investigation_id = %s",
+                (case,),
+            ).fetchone()
+            if owner is None or owner[0] != parent:
+                raise NotFoundError("Reassessment unavailable for this case.")
             report, artifacts = self._bundle(db, case)
             if "risk_digest" not in artifacts or report.previous_investigation_id != parent:
                 raise NotFoundError("Reassessment unavailable for this case.")

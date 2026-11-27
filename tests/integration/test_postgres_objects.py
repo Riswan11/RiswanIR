@@ -493,6 +493,13 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
         for item in send(child_path + "/risk", tenant=a)[1]["assessments"]
         if item["subject_id"] == assessment["subject_id"]
     )
+    status, replay = send(child_path + "/temporal-correlation/replay", tenant=a)
+    assert status == 200
+    assert replay["investigation_id"] == risk_revision["id"]
+    _, correlation = send(child_path + "/temporal-correlation", tenant=a)
+    assert correlation["rules"] == replay["rules"]
+    assert correlation["partial_matches"] == replay["partial_matches"]
+    assert send(child_path + "/incidents", tenant=a)[1]["incidents"] == replay["incidents"]
     child_request = {"subject_kind": "finding", "subject_id": assessment["subject_id"]}
     assert (
         send(child_path + "/risk/reassess", "POST", tenant=b, cookie=bob, payload=child_request)[0]
@@ -570,6 +577,35 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
         and match["classification"] == "authorized_activity"
         for match in intelligence["similar_investigations"]
     )
+    from riswan_app import postgres_memory
+
+    append_history = postgres_memory.append_history
+
+    def journal_failure(*args):
+        append_history(*args)
+        raise psycopg.OperationalError("simulated failure after feedback journal insert")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(postgres_memory, "append_history", journal_failure)
+        assert (
+            send(
+                risk_path + "/feedback",
+                "POST",
+                tenant=a,
+                payload={"disposition": "confirmed"},
+            )[0]
+            == 503
+        )
+    assert [review["disposition"] for review in send(risk_path, tenant=a)[1]["reviews"]] == [
+        "benign"
+    ]
+    assert send(
+        memory_path + "/feedback",
+        "POST",
+        tenant=a,
+        payload={"classification": "successful_remediation", "evidence_references": [reference]},
+    ) == (201, {"recorded": True})
+    assert send(current_memory, tenant=a)[1]["response_history"][assessed_case["id"]] == [reference]
     assert send(memory_path, "DELETE", tenant=a)[0] == 204
     assert send(memory_path, tenant=a)[0] == 404
     assert all(
@@ -580,3 +616,85 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
         "control.sqlite3",
         "identity.sqlite3",
     ]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["authorized", "other-product", "other-tenant", "no-resource-grant", "expired", "removed"],
+)
+def test_postgres_memory_candidate_scope_and_plans(postgres_pool, scope, record_property):
+    from riswan_app.postgres_memory import CANDIDATES_SQL, candidates
+
+    tenant, foreign, actor = uuid4(), uuid4(), uuid4()
+    account = "aws:111122223333"
+    current = "2026-01-25T00:00:00.000000+00:00"
+    after = "2026-01-02T00:00:00.000000+00:00"
+    expires = (
+        "2026-01-24T00:00:00.000000+00:00"
+        if scope == "expired"
+        else "2027-01-01T00:00:00.000000+00:00"
+    )
+    own_ids = [f"{i:032x}" for i in range(1, 513)]
+    with postgres_pool.connection() as db, db.transaction():
+        for owner, product in ((tenant, "ir"), (tenant, "other"), (foreign, "ir")):
+            db.execute(
+                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', %s, true)",
+                (str(owner), product),
+            )
+            db.execute(
+                """INSERT INTO riswan_data.investigation_ownership
+                   SELECT %s, %s, id, %s, now() FROM unnest(%s::text[]) ids(id)""",
+                (owner, product, actor, own_ids),
+            )
+            db.execute(
+                """INSERT INTO riswan_data.investigations
+                   (tenant_id, product_id, investigation_id, report, artifacts, parent_id)
+                   SELECT %s, %s, id, jsonb_build_object('id', id), '{}'::jsonb,
+                          lag(id) OVER (ORDER BY id)
+                   FROM unnest(%s::text[]) ids(id)""",
+                (owner, product, own_ids),
+            )
+            db.execute(
+                """INSERT INTO riswan_data.case_memory_snapshots
+                   SELECT %s, %s, id, jsonb_build_object(
+                     'memory_cases', jsonb_build_array(jsonb_build_object('indexed_at', %s::text)),
+                     'memory_accounts', jsonb_build_array(jsonb_build_object('account', %s::text)),
+                     'memory_records', jsonb_build_array(jsonb_build_object(
+                       'category', 'episodic', 'expires_at', %s::text))
+                   ) FROM unnest(%s::text[]) ids(id)""",
+                (
+                    owner,
+                    product,
+                    current,
+                    account if (owner, product) == (tenant, "ir") else "aws:999900001111",
+                    expires,
+                    own_ids,
+                ),
+            )
+        owner, product, authorized = {
+            "authorized": (tenant, "ir", own_ids[:128]),
+            "other-product": (tenant, "other", own_ids[:128]),
+            "other-tenant": (foreign, "ir", own_ids[:128]),
+            "no-resource-grant": (tenant, "ir", []),
+            "expired": (tenant, "ir", own_ids[:128]),
+            "removed": (tenant, "ir", own_ids[:1]),
+        }[scope]
+        db.execute(
+            "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', %s, true)",
+            (str(owner), product),
+        )
+        context = PlatformContext(owner, str(actor), "human", product, "req", "corr")
+        if scope == "removed":
+            db.execute(
+                "INSERT INTO riswan_data.investigation_memory_removals VALUES (%s, %s, %s)",
+                (owner, product, own_ids[0]),
+            )
+        result = candidates(db, context, authorized, {account}, current, after, current)
+        assert result == (tuple(own_ids[:101]) if scope == "authorized" else ())
+        if scope == "authorized":
+            plan = db.execute(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + CANDIDATES_SQL,
+                (owner, product, authorized, after, current, current, [account], [account]),
+            ).fetchone()[0][0]
+            assert plan["Plan"]["Actual Rows"] == 101
+            record_property("memory_candidate_query_plan", json.dumps(plan))

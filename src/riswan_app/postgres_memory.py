@@ -23,13 +23,7 @@ HISTORY_QUERIES = {
 }
 
 
-def candidates(db, context, authorized, accounts, cutoff, after, current):
-    if not authorized or not accounts:
-        return ()
-    return tuple(
-        row[0]
-        for row in db.execute(
-            """SELECT s.investigation_id FROM riswan_data.case_memory_snapshots s
+CANDIDATES_SQL = """SELECT s.investigation_id FROM riswan_data.case_memory_snapshots s
             WHERE s.tenant_id = %s AND s.product_id = %s AND s.investigation_id = ANY(%s)
             AND (s.snapshot #>> '{memory_cases,0,indexed_at}') BETWEEN %s AND %s
             AND EXISTS (
@@ -50,7 +44,16 @@ def candidates(db, context, authorized, accounts, cutoff, after, current):
                     (s.tenant_id, s.product_id, s.investigation_id)
             )
             ORDER BY (s.snapshot #>> '{memory_cases,0,indexed_at}') DESC, s.investigation_id
-            LIMIT 101""",
+            LIMIT 101"""
+
+
+def candidates(db, context, authorized, accounts, cutoff, after, current):
+    if not authorized or not accounts:
+        return ()
+    return tuple(
+        row[0]
+        for row in db.execute(
+            CANDIDATES_SQL,
             (
                 context.tenant_id,
                 context.product_id,
