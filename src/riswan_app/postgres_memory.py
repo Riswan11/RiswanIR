@@ -86,12 +86,15 @@ def restore_history(db, staging, case, *, for_write=False, cutoff=None):
     selected = (
         ("review", "feedback", "response", "audit") if for_write else ("feedback", "response")
     )
-    for kind, ordinal, entry in db.execute(
-        """SELECT kind, ordinal, entry FROM riswan_data.case_memory_history
+    for kind, ordinal, recorded_at, entry in db.execute(
+        """SELECT kind, ordinal, recorded_at, entry FROM riswan_data.case_memory_history
         WHERE investigation_id = %s AND kind = ANY(%s)
         AND (%s::text IS NULL OR recorded_at <= %s::text) ORDER BY kind, ordinal""",
         (case, list(selected), cutoff, cutoff),
     ):
+        when_index = 5 if kind == "review" else 3 if kind == "audit" else 2
+        if entry[0] != ordinal or entry[1] != case or time_key(entry[when_index]) != recorded_at:
+            raise NotFoundError("Historical memory entry unavailable.")
         if not for_write:
             entry[0] = None  # SQLite assigns local ordinals across the authorized candidates.
         staging.execute(HISTORY_QUERIES[kind][1], entry)

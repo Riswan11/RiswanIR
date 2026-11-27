@@ -20,6 +20,7 @@ from riswan_ir.memory.policy import allowed
 from riswan_ir.memory.policy import policy as memory_policy
 from riswan_ir.models import (
     AnalystFeedback,
+    AnalystReview,
     EvidenceSubmission,
     InvestigationReport,
     InvestigationRequest,
@@ -397,6 +398,25 @@ class PostgresCases(CaseReader):
             return stored
         origin = by_id.get(stored.original_assessment_id)
         if origin is None:
+            # The hosted route authorizes each linked case and its evidence before dispatch.
+            parent = self.risk_parent(case_id)
+            seen = {case_id}
+            while origin is None and parent is not None:
+                if parent in seen or len(seen) >= 100:
+                    raise NotFoundError("Original assessment unavailable for this case.")
+                seen.add(parent)
+                origin = next(
+                    (
+                        item
+                        for item in postgres_intelligence.parse_risk(
+                            parent, self.artifact(parent, "risk_assessments")
+                        )
+                        if item.assessment.id == stored.original_assessment_id
+                    ),
+                    None,
+                )
+                parent = self.risk_parent(parent)
+        if origin is None:
             raise NotFoundError("Original assessment unavailable for this case.")
         reproduced = calculate_risk(
             case_id,
@@ -494,6 +514,17 @@ class PostgresCases(CaseReader):
             if row is None:
                 raise NotFoundError("Investigation not found.")
             return InvestigationReport.model_validate_json(json.dumps(row[0]))
+
+    def reviews(self, case: str) -> list[AnalystReview]:
+        with self._scope.transaction() as (db, _):
+            return [
+                AnalystReview(reviewer=actor, disposition=entry[3], notes=entry[4], created_at=when)
+                for actor, when, entry in db.execute(
+                    """SELECT actor_id, recorded_at, entry FROM riswan_data.case_memory_history
+                    WHERE investigation_id = %s AND kind = 'review' ORDER BY ordinal""",
+                    (case,),
+                )
+            ]
 
     def list_scoped(self, ids: tuple[str, ...]) -> list[InvestigationSummary]:
         with self._scope.transaction() as (db, _):

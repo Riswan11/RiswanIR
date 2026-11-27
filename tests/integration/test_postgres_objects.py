@@ -140,6 +140,9 @@ def test_postgres_case_ownership_scopes_directory_and_sql(postgres_pool):
 
 
 def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, request_payload):
+    from datetime import UTC, datetime
+    from urllib.parse import urlencode
+
     import psycopg
     from psycopg_pool import PoolClosed
 
@@ -160,6 +163,7 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     path = tmp_path / "oidc.json"
     path.write_text(configuration.model_dump_json(), encoding="utf-8")
     monkeypatch.setattr(identity_runtime, "OIDCProvider", FixtureProvider)
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: datetime.now(UTC).isoformat())
     app = identity_runtime.compose_identity(
         path,
         tmp_path / "identity.sqlite3",
@@ -170,12 +174,13 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     alice, _ = login(app, "alice")
     bob, _ = login(app, "bob")
 
-    def send(path, method="GET", *, cookie=alice, tenant=None, payload=None):
+    def send(path, method="GET", *, cookie=alice, tenant=None, payload=None, query=""):
         status, _, response = call(
             app,
             path,
             method,
             cookie=cookie,
+            query=query,
             origin="https://app.example",
             tenant=tenant,
             payload=payload,
@@ -466,21 +471,52 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     history = f"{risk_path}/risk/finding/{assessment['subject_id']}/history"
     assert send(history, tenant=a)[1]["assessments"] == [contained, assessment]
     assert send(risk_path + "/risk/" + contained["id"] + "/replay", tenant=a) == (200, contained)
+    status, risk_revision = send(
+        risk_path + "/revisions",
+        "POST",
+        tenant=a,
+        payload={
+            "records": [
+                {
+                    **scenario(10)[-1],
+                    "eventID": "late-context",
+                    "eventName": "GetBucketLocation",
+                    "eventTime": "2021-01-22T00:00:00Z",
+                }
+            ]
+        },
+    )
+    assert status == 201
+    child_path = f"{base}/{risk_revision['id']}"
+    child_risk = next(
+        item
+        for item in send(child_path + "/risk", tenant=a)[1]["assessments"]
+        if item["subject_id"] == assessment["subject_id"]
+    )
+    child_request = {"subject_kind": "finding", "subject_id": assessment["subject_id"]}
+    assert (
+        send(child_path + "/risk/reassess", "POST", tenant=b, cookie=bob, payload=child_request)[0]
+        == 404
+    )
+    status, reassessed = send(
+        child_path + "/risk/reassess", "POST", tenant=a, payload=child_request
+    )
+    assert status == 200 and reassessed["investigation_id"] == risk_revision["id"]
+    assert send(child_path + "/risk/" + child_risk["id"] + "/replay", tenant=a) == (200, child_risk)
+    assert send(history, tenant=a)[1]["assessments"] == [contained, assessment]
     memory_path = risk_path + "/memory"
     assert send(memory_path, tenant=a)[0] == 200
     assert send(memory_path, tenant=b, cookie=bob)[0] == 404
-    assert send(
-        risk_path + "/feedback",
-        "POST",
-        tenant=a,
-        payload={"reviewer": "client-claim", "disposition": "benign"},
-    ) == (201, {"recorded": True})
-    assert send(
-        memory_path + "/feedback",
-        "POST",
-        tenant=a,
-        payload={"classification": "authorized_activity", "evidence_references": [reference]},
-    ) == (201, {"recorded": True})
+    assert (
+        send(
+            risk_path + "/feedback",
+            "POST",
+            tenant=a,
+            payload={"reviewer": "client-claim", "disposition": "benign"},
+        )[0]
+        == 201
+    )
+    assert send(risk_path, tenant=a)[1]["reviews"][0]["reviewer"] != "client-claim"
     assert (
         send(
             memory_path + "/feedback",
@@ -514,12 +550,31 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
         payload={"title": "Current case", "principal": ROOT, "records": independent},
     )
     assert status == 201
+    current_memory = f"{base}/{current_case['id']}/memory"
+    cutoff = urlencode({"as_of": current_case["created_at"]})
+    assert send(
+        memory_path + "/feedback",
+        "POST",
+        tenant=a,
+        payload={"classification": "authorized_activity", "evidence_references": [reference]},
+    ) == (201, {"recorded": True})
+    status, past = send(current_memory, tenant=a, query=cutoff)
+    assert status == 200
+    assert not any(
+        item["classification"] == "authorized_activity" for item in past["similar_investigations"]
+    )
     status, intelligence = send(f"{base}/{current_case['id']}/memory", tenant=a)
     assert status == 200
     assert any(
         match["investigation_id"] == assessed_case["id"]
         and match["classification"] == "authorized_activity"
         for match in intelligence["similar_investigations"]
+    )
+    assert send(memory_path, "DELETE", tenant=a)[0] == 204
+    assert send(memory_path, tenant=a)[0] == 404
+    assert all(
+        match["investigation_id"] != assessed_case["id"]
+        for match in send(current_memory, tenant=a)[1]["similar_investigations"]
     )
     assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
         "control.sqlite3",

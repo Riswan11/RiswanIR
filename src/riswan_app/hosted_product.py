@@ -211,9 +211,14 @@ class HostedPostgresCases:
         if method == "POST" and suffix in {"/feedback", "/memory/feedback"}:
             guard.require(Permission.FEEDBACK, scope.kind, scope.id)
             self._evidence(guard, scope)
-            model = Feedback if suffix == "/memory/feedback" else AnalystFeedback
-            self.store.memory_feedback(case_id, model.model_validate(Application.body(env)))
-            return 201, {"recorded": True}
+            body = Application.body(env)
+            if suffix == "/memory/feedback":
+                self.store.memory_feedback(case_id, Feedback.model_validate(body))
+                return 201, {"recorded": True}
+            body["reviewer"] = require_context().actor_id
+            self.store.memory_feedback(case_id, AnalystFeedback.model_validate(body))
+            report = self.store.get(case_id)
+            return 201, {"id": report.id, "created_at": report.created_at}
         if method == "DELETE" and suffix == "/memory":
             guard.require(Permission.MEMORY_MANAGE, scope.kind, scope.id)
             self._evidence(guard, scope)
@@ -232,13 +237,7 @@ class HostedPostgresCases:
             self._evidence(guard, scope)
             self._evidence(guard, scope, raw=True)
             request = Reassessment.model_validate(Application.body(env))
-            parent = self.store.risk_parent(case_id)
-            if parent is not None:
-                parent_scope = Scope(ScopeType.INVESTIGATION, parent)
-                guard.require(Permission.READ, parent_scope.kind, parent_scope.id)
-                guard.require(Permission.RISK, parent_scope.kind, parent_scope.id)
-                self._evidence(guard, parent_scope)
-                self._evidence(guard, parent_scope, raw=True)
+            parent = self._risk_lineage(guard, case_id)
             return 200, self.store.reassess(case_id, request, parent=parent).payload()
         graph_route = suffix == "/knowledge-graph" or suffix.startswith("/knowledge-graph/")
         temporal_route = suffix in {
@@ -330,12 +329,12 @@ class HostedPostgresCases:
         if risk_route:
             guard.require(Permission.RISK, scope.kind, scope.id)
             self._evidence(guard, scope, raw=True)
-            if report.previous_investigation_id:
-                guard.require(Permission.READ, scope.kind, report.previous_investigation_id)
+            self._risk_lineage(guard, case_id)
             return 200, serve_risk(
                 self.store, case_id, suffix, env.get("QUERY_STRING", ""), scoped=True
             )
         result = report.payload()
+        result["reviews"] = [review.payload() for review in self.store.reviews(case_id)]
         for action, field in (
             (Permission.GRAPH, "graph"),
             (Permission.CORRELATE, "correlation"),
@@ -352,6 +351,21 @@ class HostedPostgresCases:
             except AccessDenied:
                 result.pop("previous_investigation_id", None)
         return 200, result
+
+    def _risk_lineage(self, guard: Enforcement, case: str) -> str | None:
+        parent = first = self.store.risk_parent(case)
+        seen = {case}
+        while parent is not None:
+            if parent in seen or len(seen) >= 100:
+                raise AccessDenied
+            seen.add(parent)
+            scope = Scope(ScopeType.INVESTIGATION, parent)
+            guard.require(Permission.READ, scope.kind, scope.id)
+            guard.require(Permission.RISK, scope.kind, scope.id)
+            self._evidence(guard, scope)
+            self._evidence(guard, scope, raw=True)
+            parent = self.store.risk_parent(parent)
+        return first
 
     def _memory_cases(self, guard: Enforcement) -> tuple[str, ...]:
         readable = set(guard.investigation_ids())
