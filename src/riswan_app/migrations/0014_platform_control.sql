@@ -56,16 +56,19 @@ $ddl$;
 CREATE POLICY membership_self ON riswan_control.organization_memberships FOR SELECT
  USING (identity_id = nullif(current_setting('riswan.control_actor', true),'') AND revoked_at IS NULL);
 CREATE POLICY membership_tenant ON riswan_control.organization_memberships
- USING (tenant_id = nullif(current_setting('riswan.control_tenant',true),''));
+ USING (tenant_id = nullif(current_setting('riswan.control_tenant',true),'')
+ AND nullif(current_setting('riswan.control_actor',true),'') IS NOT NULL);
 CREATE POLICY invitation_recipient ON riswan_control.organization_invitations FOR SELECT
  USING (identity_id = nullif(current_setting('riswan.control_actor',true),''));
 CREATE POLICY invitation_consume ON riswan_control.organization_invitations FOR UPDATE
  USING (identity_id = nullif(current_setting('riswan.control_actor',true),'') AND closed_at IS NULL)
  WITH CHECK (identity_id = nullif(current_setting('riswan.control_actor',true),'') AND closed_at IS NOT NULL);
 CREATE POLICY invitation_tenant ON riswan_control.organization_invitations
- USING (tenant_id = nullif(current_setting('riswan.control_tenant',true),''));
+ USING (tenant_id = nullif(current_setting('riswan.control_tenant',true),'')
+ AND nullif(current_setting('riswan.control_actor',true),'') IS NOT NULL);
 CREATE POLICY tenant_scope ON riswan_control.tenants
- USING (id = nullif(current_setting('riswan.control_tenant',true),''));
+ USING (id = nullif(current_setting('riswan.control_tenant',true),'')
+ AND nullif(current_setting('riswan.control_actor',true),'') IS NOT NULL);
 CREATE POLICY tenant_discovery ON riswan_control.tenants FOR SELECT USING (
  EXISTS (SELECT 1 FROM riswan_control.organization_memberships m WHERE m.tenant_id = id
   AND m.identity_id = nullif(current_setting('riswan.control_actor', true),'') AND m.revoked_at IS NULL)
@@ -74,14 +77,16 @@ CREATE POLICY tenant_discovery ON riswan_control.tenants FOR SELECT USING (
     AND i.closed_at IS NULL))
 );
 CREATE POLICY organization_scope ON riswan_control.organizations
- USING (id = nullif(current_setting('riswan.control_org',true),''));
+ USING (id = nullif(current_setting('riswan.control_org',true),'')
+ AND nullif(current_setting('riswan.control_actor',true),'') IS NOT NULL);
 CREATE POLICY organization_discovery ON riswan_control.organizations FOR SELECT USING (
  EXISTS (SELECT 1 FROM riswan_control.tenants t JOIN riswan_control.organization_memberships m ON m.tenant_id = t.id
   WHERE t.organization_id = organizations.id
   AND m.identity_id = nullif(current_setting('riswan.control_actor', true),'') AND m.revoked_at IS NULL)
 );
 CREATE POLICY snapshot_scope ON riswan_control.authorization_snapshots
- USING (tenant_id = nullif(current_setting('riswan.control_tenant',true),''));
+ USING (tenant_id = nullif(current_setting('riswan.control_tenant',true),'')
+ AND nullif(current_setting('riswan.control_actor',true),'') IS NOT NULL);
 CREATE POLICY organization_audit_scope ON riswan_control.organization_audit_events FOR INSERT
  WITH CHECK (actor_id = nullif(current_setting('riswan.control_actor',true),'')
   AND (tenant_id = nullif(current_setting('riswan.control_tenant',true),'')

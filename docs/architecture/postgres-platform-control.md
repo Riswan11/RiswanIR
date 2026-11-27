@@ -1,6 +1,6 @@
 # PostgreSQL platform control cutover
 
-A.6 adds a separately scoped platform identity repository to the PostgreSQL preview. Acceptance remains open for tenancy, authorization, secrets metadata, integration and collection controls. Existing preview configurations that explicitly compose SQLite control storage continue to use it. The PostgreSQL identity adapter has no SQLite fallback.
+A.6 adds a separately scoped platform identity repository to the PostgreSQL preview. A dedicated PostgreSQL control pool enables organization, tenancy and authorization operations. Secrets metadata, integration and collection controls remain open. Existing preview configurations that explicitly compose SQLite control storage continue to use it. The PostgreSQL identity adapter has no SQLite fallback.
 
 ## Repository inventory
 
@@ -24,3 +24,21 @@ These tables are platform-scoped. They deliberately omit tenant RLS because auth
 In the composition-only preview, pass the dedicated PostgreSQL identity pool as postgres_identity_pool, an existing PostgreSQL product pool as postgres_case_pool, and None as identity_db. Supply control_db explicitly until the remaining control repositories are ported. Mixing identity backends fails configuration validation. An unavailable PostgreSQL identity pool returns a generic service-unavailable response without creating a SQLite identity database.
 
 For the tenancy port, keep actor-scoped membership and recipient lookup separate from tenant-admin commands. Bind actor context from a verified principal, and bind tenant context only after active membership proof. Keep invitation consumption, role publication, and membership changes in a single restricted transaction. Keep secret values and temporary cloud credentials out of all control tables and audit payloads.
+
+## PostgreSQL authorization and tenancy
+
+Migration 0014 adds a dedicated riswan_control schema and runtime login. The migration owner controls grants and schema objects. Provision riswan_control_runtime without membership in the product, authentication or migration roles and without RLS bypass. The authentication and product logins receive no control-schema grant.
+
+| Records | Ownership and policy |
+| --- | --- |
+| Organizations and tenants | Stable IDs joined by a unique organization reference. Forced RLS limits discovery to non-revoked memberships. A recipient can validate the active tenant of an open invitation without gaining organization visibility. |
+| Memberships | Composite tenant/actor key and database references to the tenant and global identity. Forced RLS permits self discovery before tenant selection. Tenant-scoped scope enables authorized management. |
+| Invitations | Tenant and recipient references plus a composite inviter membership reference. Forced RLS protects tenant management and recipient acceptance. Only the closure column is mutable by the runtime. Token digests are unique. |
+| Authorization snapshots | Tenant and actor ownership through a composite membership reference. Forced RLS applies to product assignments and grants. Role and permission definitions remain in application code. |
+| Audit | Tenant and actor context on the decision. Forced RLS and insert-only runtime grants protect historical rows. Actor-attributed request denials use an explicit platform audit policy. |
+
+The hosted composition accepts postgres_control_pool alongside postgres_identity_pool and postgres_case_pool. The verified principal establishes actor context before a tenant is chosen. Organization administration and product routing bind tenant scope after membership lookup. Bootstrap binds the newly allocated tenant and organization IDs. Acceptance binds tenant scope after a recipient-scoped single-use update. All context is transaction-local. The database login trusts this application boundary to set context from verified identities and fixed service queries. Possession of the runtime database credentials is outside the end-user trust boundary.
+
+Organization bootstrap, initial owner and policy publication, invitation acceptance, role changes, ownership transfer, revocation, lifecycle updates and their business audits use one control-database transaction. A savepoint rolls back a rejected mutation while the outer transaction preserves prior authorization decisions. A transaction advisory lock preserves the SQLite single-writer ordering during the preview. A partial unique index prevents multiple active owners and a deferred database trigger requires at least one active owner at commit. Retrying a consumed invitation is denied. The advisory lock serializes control operations and merits load testing before a production cutover.
+
+Secrets and collection configuration are unavailable in this composition until their control repositories are ported. SQLite remains an explicitly configured compatibility mode. Existing SQLite control records need a validated import preserving the global actor IDs before production cutover.

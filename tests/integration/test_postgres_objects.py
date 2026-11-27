@@ -1154,3 +1154,256 @@ def test_postgres_identity_lookup_query_plans(postgres_identity_pool, record_pro
         ):
             assert plan["Plan"]["Actual Rows"] == 1
             record_property(f"{name}_query_plan", json.dumps(plan))
+
+
+@pytest.mark.parametrize(
+    "mode", ["wrong-recipient", "revoked", "expired", "concurrent", "audit-failure"]
+)
+def test_postgres_invitation_atomicity(hosted_postgres, mode, monkeypatch):
+    from datetime import datetime, timedelta
+    from threading import Barrier
+
+    import psycopg
+
+    from riswan_app import tenancy
+
+    app, send, _, bob, tenant, _ = hosted_postgres
+    status, organizations = send("/v1/organizations")
+    assert status == 200
+    org = "/v1/organizations/" + next(
+        item["id"] for item in organizations if item["tenant_id"] == tenant
+    )
+    _, identity = send("/v1/identity/me", cookie=bob)
+    assert send(org, cookie=bob)[0] == 404
+    assert send("/v1/investigations", cookie=bob, tenant=tenant)[0] == 404
+    payload = {"identity_id": identity["identity_id"], "role": "analyst"}
+    assert send(org + "/invitations", "POST", cookie=bob, payload=payload)[0] == 404
+    status, invite = send(org + "/invitations", "POST", payload=payload)
+    assert status == 201
+    accept = "/v1/organizations/invitations/accept"
+    token = {"token": invite["token"]}
+    if mode == "wrong-recipient":
+        assert send(accept, "POST", payload=token)[0] == 404
+    elif mode == "revoked":
+        assert send(org + "/invitations/" + invite["id"], "DELETE")[0] == 204
+    elif mode == "expired":
+
+        class Later(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(days=2)
+
+        monkeypatch.setattr(tenancy, "datetime", Later)
+    elif mode == "concurrent":
+        barrier = Barrier(2)
+
+        def accept_once():
+            barrier.wait(timeout=10)
+            return send(accept, "POST", cookie=bob, payload=token)[0]
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            futures = [workers.submit(accept_once) for _ in range(2)]
+            assert sorted(f.result(timeout=20) for f in futures) == [200, 404]
+    else:
+        service = app._authenticated_routes.tenancy
+        audit = service._audit
+
+        def fail_audit(*args):
+            audit(*args)
+            raise psycopg.OperationalError("simulated audit write failure")
+
+        with monkeypatch.context() as patches:
+            patches.setattr(service, "_audit", fail_audit)
+            assert send(accept, "POST", cookie=bob, payload=token)[0] == 503
+        assert send(org, cookie=bob)[0] == 404
+        assert send("/v1/investigations", cookie=bob, tenant=tenant)[0] == 404
+    if mode in {"wrong-recipient", "audit-failure"}:
+        assert send(accept, "POST", cookie=bob, payload=token) == (200, {"tenant_id": tenant})
+    else:
+        assert send(accept, "POST", cookie=bob, payload=token)[0] == 404
+    joined = mode not in {"revoked", "expired"}
+    assert send(org, cookie=bob)[0] == (200 if joined else 404)
+    assert send("/v1/investigations", cookie=bob, tenant=tenant)[0] == (200 if joined else 404)
+
+
+def test_postgres_owner_transfer_and_lifecycle(hosted_postgres):
+    from threading import Barrier
+
+    _, send, alice, bob, tenant, other = hosted_postgres
+    _, organizations = send("/v1/organizations")
+    org = "/v1/organizations/" + next(
+        item["id"] for item in organizations if item["tenant_id"] == tenant
+    )
+    _, actor = send("/v1/identity/me", cookie=alice)
+    _, target = send("/v1/identity/me", cookie=bob)
+    invite_body = {"identity_id": target["identity_id"], "role": "analyst"}
+    assert send(org + "/members/role", "PUT", cookie=bob, payload=invite_body)[0] == 404
+    assert send(org + "/members/" + actor["identity_id"], "DELETE")[0] == 404
+    _, invite = send(org + "/invitations", "POST", payload=invite_body)
+    assert (
+        send(
+            "/v1/organizations/invitations/accept",
+            "POST",
+            cookie=bob,
+            payload={"token": invite["token"]},
+        )[0]
+        == 200
+    )
+
+    barrier = Barrier(2)
+
+    def transfer():
+        barrier.wait(timeout=10)
+        return send(org + "/ownership", "POST", payload={"identity_id": target["identity_id"]})[0]
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures = [workers.submit(transfer) for _ in range(2)]
+        assert sorted(f.result(timeout=20) for f in futures) == [204, 404]
+    status, members = send(org + "/members", cookie=bob)
+    assert status == 200
+    assert [m["identity_id"] for m in members if m["role"] == "owner"] == [target["identity_id"]]
+    assert send(org + "/members/" + target["identity_id"], "DELETE", cookie=bob)[0] == 404
+    assert send(org + "/members/" + actor["identity_id"], "DELETE", cookie=bob)[0] == 204
+    assert send("/v1/investigations", tenant=tenant, cookie=alice)[0] == 404
+    assert send("/v1/investigations", tenant=other, cookie=bob)[0] == 200
+    for lifecycle, expected in (("suspended", 404), ("active", 200), ("archived", 404)):
+        assert send(org + "/lifecycle", "POST", cookie=bob, payload={"status": lifecycle})[0] == 200
+        assert send("/v1/investigations", tenant=tenant, cookie=bob)[0] == expected
+    assert send(org + "/lifecycle", "POST", cookie=bob, payload={"status": "active"})[0] == 404
+
+
+def test_postgres_control_direct_sql_scope(hosted_postgres, postgres_control_pool):
+    import psycopg
+
+    from riswan_platform.identity.models import AuthenticationError
+
+    app, send, _, _, tenant, other = hosted_postgres
+    _, actor = send("/v1/identity/me")
+    repo = app._authenticated_routes.tenancy.authorization
+    with pytest.raises(AuthenticationError):
+        repo.policy_for(UUID(actor["identity_id"]), UUID(tenant))
+    with postgres_control_pool.connection() as db, db.transaction():
+        assert db.execute(
+            "SELECT count(*) FROM riswan_control.organization_memberships"
+        ).fetchone() == (0,)
+        assert db.execute(
+            "SELECT count(*) FROM riswan_control.authorization_snapshots"
+        ).fetchone() == (0,)
+        db.execute("SELECT set_config('riswan.control_actor', %s, true)", (actor["identity_id"],))
+        assert db.execute(
+            "SELECT identity_id FROM riswan_control.organization_memberships WHERE tenant_id = %s",
+            (tenant,),
+        ).fetchall() == [(actor["identity_id"],)]
+        assert (
+            db.execute(
+                "SELECT * FROM riswan_control.organization_memberships WHERE tenant_id = %s",
+                (other,),
+            ).fetchall()
+            == []
+        )
+        for table in (
+            "riswan_auth.identities",
+            "riswan_data.investigations",
+            "riswan_control.authorization_audit_events",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute(
+                    psycopg.sql.SQL("SELECT * FROM {}").format(
+                        psycopg.sql.Identifier(*table.split("."))
+                    )
+                )
+        db.execute("SELECT set_config('riswan.control_tenant', %s, true)", (tenant,))
+        with pytest.raises(psycopg.errors.CheckViolation), db.transaction():
+            db.execute(
+                "UPDATE riswan_control.organization_memberships SET role = 'viewer' WHERE tenant_id = %s",
+                (tenant,),
+            )
+            db.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    with postgres_control_pool.connection() as db:
+        assert db.execute(
+            "SELECT count(*) FROM riswan_control.organization_memberships"
+        ).fetchone() == (0,)
+
+
+def test_postgres_control_outage_has_no_sqlite_fallback(hosted_postgres, tmp_path, monkeypatch):
+    from psycopg_pool import PoolClosed
+
+    app, send, _, _, tenant, _ = hosted_postgres
+
+    def unavailable():
+        raise PoolClosed("simulated control outage")
+
+    repo = app._authenticated_routes.tenancy.authorization
+    monkeypatch.setattr(repo._pool, "connection", unavailable)
+    assert send("/v1/organizations")[0] == 503
+    assert send("/v1/investigations", tenant=tenant)[0] == 503
+    assert not (tmp_path / "control.sqlite3").exists()
+
+
+def test_postgres_control_query_plans(hosted_postgres, record_property):
+    import psycopg
+
+    _, send, _, bob, tenant, _ = hosted_postgres
+    _, actor = send("/v1/identity/me")
+    _, other = send("/v1/identity/me", cookie=bob)
+    actor_id, other_id = actor["identity_id"], other["identity_id"]
+    with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as db:
+        with db.transaction(force_rollback=True):
+            db.execute(
+                """INSERT INTO riswan_control.organizations
+                SELECT md5('org-plan-' || i)::uuid::text, 'Fixture', '{}', '2026-01-01'
+                FROM generate_series(1, 512) AS g(i)"""
+            )
+            db.execute(
+                """INSERT INTO riswan_control.tenants
+                SELECT md5('tenant-plan-' || i)::uuid::text, md5('org-plan-' || i)::uuid::text, 'active'
+                FROM generate_series(1, 512) AS g(i)"""
+            )
+            db.execute(
+                """INSERT INTO riswan_control.organization_memberships
+                SELECT md5('tenant-plan-' || i)::uuid::text, %s, 'owner', '2026-01-01', NULL
+                FROM generate_series(1, 512) AS g(i)""",
+                (other_id,),
+            )
+            db.execute(
+                """INSERT INTO riswan_control.organization_invitations
+                SELECT md5('invitation-plan-' || i)::uuid::text, md5('tenant-plan-' || i)::uuid::text,
+                    %s, 'viewer', %s, md5('digest-plan-' || i), '2027-01-01', NULL
+                FROM generate_series(1, 512) AS g(i)""",
+                (
+                    actor_id,
+                    other_id,
+                ),
+            )
+            db.execute("ANALYZE riswan_control.organization_memberships")
+            db.execute("ANALYZE riswan_control.organization_invitations")
+            db.execute("SET LOCAL ROLE riswan_control_runtime")
+            db.execute("SELECT set_config('riswan.control_actor', %s, true)", (actor_id,))
+            patterns = (
+                (
+                    "membership_discovery",
+                    """SELECT m.tenant_id FROM riswan_control.organization_memberships m
+                    WHERE m.identity_id = %s AND m.revoked_at IS NULL""",
+                    (actor_id,),
+                ),
+                (
+                    "active_membership",
+                    """SELECT t.organization_id
+                    FROM riswan_control.organization_memberships m JOIN riswan_control.tenants t ON t.id = m.tenant_id
+                    WHERE m.tenant_id = %s AND m.identity_id = %s AND m.revoked_at IS NULL AND t.status = 'active'""",
+                    (tenant, actor_id),
+                ),
+                (
+                    "invitation_lookup",
+                    """SELECT id FROM riswan_control.organization_invitations
+                    WHERE digest = md5('digest-plan-256') AND identity_id = %s AND closed_at IS NULL
+                    AND expires_at > '2026-01-01'""",
+                    (actor_id,),
+                ),
+            )
+            for name, query, params in patterns:
+                plan = db.execute(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, params
+                ).fetchone()[0][0]
+                assert plan["Plan"]["Actual Rows"] >= 1
+                record_property(f"{name}_query_plan", json.dumps(plan))
