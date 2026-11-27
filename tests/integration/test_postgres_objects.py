@@ -1087,3 +1087,50 @@ def test_postgres_identity_failure_has_no_sqlite_fallback(hosted_postgres, tmp_p
     monkeypatch.setattr(app.service.repository._pool, "connection", unavailable)
     assert call(app, "/v1/identity/me", cookie=alice)[0] == 503
     assert not (tmp_path / "identity.sqlite3").exists()
+
+
+def test_postgres_identity_lookup_query_plans(postgres_identity_pool, record_property):
+    with postgres_identity_pool.connection() as db, db.transaction(force_rollback=True):
+        fixture_issuer = "https://plans.example"
+        count = 1024
+        db.execute(
+            """INSERT INTO riswan_auth.identities
+            SELECT md5('identity-plan-' || i)::uuid::text, 'human', 'Fixture', NULL, 'active', 0, 0
+            FROM generate_series(1, %s) AS g(i)""",
+            (count,),
+        )
+        db.execute(
+            """INSERT INTO riswan_auth.identity_provider_links
+            SELECT %s, 'subject-' || i, md5('identity-plan-' || i)::uuid::text
+            FROM generate_series(1, %s) AS g(i)""",
+            (fixture_issuer, count),
+        )
+        db.execute(
+            """INSERT INTO riswan_auth.identity_sessions
+            SELECT md5('session-plan-' || i)::uuid::text, md5('identity-plan-' || i)::uuid::text,
+                   encode(sha256(convert_to('cookie-plan-' || i, 'UTF8')), 'hex'), 0, 0, 100, 1, NULL
+            FROM generate_series(1, %s) AS g(i)""",
+            (count,),
+        )
+        identity_lookup = db.execute(
+            """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+            SELECT i.*, l.issuer, l.subject FROM riswan_auth.identities i
+            JOIN riswan_auth.identity_provider_links l ON l.identity_id = i.id
+            WHERE l.issuer = %s AND l.subject = %s""",
+            (fixture_issuer, "subject-512"),
+        ).fetchone()[0][0]
+        session_lookup = db.execute(
+            """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+            SELECT i.*, l.issuer, l.subject, s.id AS sid, s.last_seen, s.expires, s.mfa, s.revoked
+            FROM riswan_auth.identity_sessions s
+            JOIN riswan_auth.identities i ON i.id = s.identity_id
+            JOIN riswan_auth.identity_provider_links l ON l.identity_id = i.id
+            WHERE s.digest = %s""",
+            (sha256(b"cookie-plan-512").hexdigest(),),
+        ).fetchone()[0][0]
+        for name, plan in (
+            ("identity_mapping", identity_lookup),
+            ("session_digest", session_lookup),
+        ):
+            assert plan["Plan"]["Actual Rows"] == 1
+            record_property(f"{name}_query_plan", json.dumps(plan))
