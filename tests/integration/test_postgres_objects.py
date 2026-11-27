@@ -1407,3 +1407,81 @@ def test_postgres_control_query_plans(hosted_postgres, record_property):
                 ).fetchone()[0][0]
                 assert plan["Plan"]["Actual Rows"] >= 1
                 record_property(f"{name}_query_plan", json.dumps(plan))
+            db.execute("SELECT set_config('riswan.control_tenant', %s, true)", (tenant,))
+            scoped = (
+                (
+                    "membership_list",
+                    """SELECT identity_id, role, joined_at, revoked_at
+                    FROM riswan_control.organization_memberships WHERE tenant_id = %s
+                    ORDER BY joined_at, identity_id""",
+                    (tenant,),
+                ),
+                (
+                    "authorization_snapshot",
+                    """SELECT policy FROM riswan_control.authorization_snapshots
+                    WHERE actor_id = %s AND tenant_id = %s""",
+                    (actor_id, tenant),
+                ),
+            )
+            for name, query, params in scoped:
+                plan = db.execute(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, params
+                ).fetchone()[0][0]
+                assert plan["Plan"]["Actual Rows"] >= 1
+                record_property(f"{name}_query_plan", json.dumps(plan))
+
+
+def test_postgres_role_scope_and_member_role_publication(hosted_postgres):
+    from datetime import UTC, datetime
+
+    from riswan_platform.authorization import (
+        Assignment,
+        AuthorizationRequest,
+        Permission,
+        Resource,
+        Role,
+        Scope,
+        ScopeType,
+    )
+    from riswan_platform.authorization.enforcement import AccessDenied
+    from riswan_platform.identity.principal import bind_principal
+
+    app, send, alice, bob, tenant, _ = hosted_postgres
+    _, organizations = send("/v1/organizations")
+    org = "/v1/organizations/" + next(
+        item["id"] for item in organizations if item["tenant_id"] == tenant
+    )
+    _, target = send("/v1/identity/me", cookie=bob)
+    assignment = {"identity_id": target["identity_id"], "role": "viewer"}
+    _, invite = send(org + "/invitations", "POST", payload=assignment)
+    assert (
+        send(
+            "/v1/organizations/invitations/accept",
+            "POST",
+            cookie=bob,
+            payload={"token": invite["token"]},
+        )[0]
+        == 200
+    )
+    assert send("/v1/investigations", "POST", cookie=bob, tenant=tenant, payload={})[0] == 404
+    assert send(org + "/members/role", "PUT", payload={**assignment, "role": "owner"})[0] == 404
+    assert send(org + "/members/role", "PUT", payload={**assignment, "role": "analyst"})[0] == 204
+    assert send("/v1/investigations", "POST", cookie=bob, tenant=tenant, payload={})[0] == 400
+    service = app._authenticated_routes.tenancy
+    principal = app.service.authenticate("assignment-test", cookie=alice.split("=", 1)[1])
+    with bind_principal(principal), service.authorization.transaction():
+        context = service.context_for(principal, UUID(tenant), "platform", "assignment-test")
+        assert context is not None
+        resource = Resource(UUID(tenant), "platform", Scope(ScopeType.ORGANIZATION, tenant))
+        request = AuthorizationRequest(principal, context, Permission.ROLES_ASSIGN, resource)
+        with pytest.raises(AccessDenied):
+            service.authorization.change_assignment(
+                request,
+                UUID(target["identity_id"]),
+                Assignment(
+                    Role.OPERATOR,
+                    Scope(ScopeType.PLATFORM, "platform"),
+                    principal.identity.identity_id,
+                    datetime.now(UTC),
+                ),
+            )
