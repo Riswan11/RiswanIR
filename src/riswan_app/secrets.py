@@ -194,6 +194,9 @@ class Secrets:
         if item.provider_instance_id is not None:
             if self.routing is None:
                 raise ProviderUnavailable("Secret provider binding unavailable.")
+            if not self.repository.initializes_sqlite_schema:
+                with self.repository._connection() as db:
+                    self._register_binding(db, item)
             provider = self.routing.provider(item, capability)
         else:
             if self.provider is None or item.provider != self.provider.name:

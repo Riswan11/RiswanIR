@@ -54,3 +54,32 @@ The disposable PostgreSQL test adds 512 organizations, tenants, memberships and 
 | Recipient invitation lookup with open and expiration predicates | Unique invitation digest index | 0.016 ms |
 
 Membership listing and authorization snapshot access are measured separately in the same test. Product assignments and resource grants share the actor/tenant snapshot lookup. Runtime audit access is append-only, so there is no application audit read plan. The fixture did not justify a new expiration or audit index. The advisory lock and RLS subplan costs need larger tenant-cardinality and concurrent-load measurements before a live cutover.
+
+## A.6.3 secrets and credential controls
+
+Migration 0015 adds tenant/product-scoped provider bindings, secret metadata,
+versions, rotation operations, workload policies and append-only access events.
+Credential bindings and lease references further require the current workload.
+The active version is a composite foreign key to the same secret in the same
+tenant and product. A provider instance is bound to its original scope and
+namespace. Grant rows reference both the relevant secret and an existing tenant
+membership. The existing enrollment timestamp check invalidates grants and
+credential bindings after re-enrollment.
+
+The development preview accepts a trusted, in-process preview_secret_routing
+object when all three PostgreSQL pools are configured. It still requires the
+explicit development gate. CLI and environment-driven cloud provider
+configuration remain disabled for the PostgreSQL preview. The existing SDK
+contract and registry continue to resolve capabilities. The authorized
+credential broker stores integration, target and workload references and lease
+ID and expiry. The provider executes the credential operation within its
+trusted adapter. Integration registration and collection orchestration remain
+A.6.4.
+
+No credential material or recoverable temporary credential appears in the
+metadata contract. Authenticated secret endpoints return metadata only. Audit
+rows require the session-bound actor and grant no UPDATE or DELETE privilege.
+The control transaction preserves the existing writer ordering for rotation and
+policy changes. Database transactions cannot undo cloud provider calls.
+Provider retry uses existing operation and native version references. Test
+coverage uses synthetic provider operations and localhost PostgreSQL.

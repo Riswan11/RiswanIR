@@ -1,7 +1,7 @@
 CREATE TABLE riswan_control.secret_provider_bindings (
  tenant_id text NOT NULL REFERENCES riswan_control.tenants,
  product text NOT NULL, instance_id text NOT NULL, binding text NOT NULL,
- PRIMARY KEY (tenant_id, product, instance_id)
+ PRIMARY KEY (tenant_id, product, instance_id), UNIQUE (instance_id)
 );
 CREATE TABLE riswan_control.secret_metadata (
  id text NOT NULL, tenant_id text NOT NULL REFERENCES riswan_control.tenants,
@@ -68,6 +68,10 @@ BEGIN
  END LOOP;
 END;
 $ddl$;
+CREATE POLICY secret_audit_actor ON riswan_control.secret_access_events AS RESTRICTIVE
+ FOR INSERT TO riswan_control_runtime WITH CHECK (
+  event::jsonb->>'actor_id' = nullif(current_setting('riswan.control_actor',true),'')
+ );
 GRANT UPDATE (metadata) ON riswan_control.secret_metadata TO riswan_control_runtime;
 GRANT UPDATE (version) ON riswan_control.secret_versions TO riswan_control_runtime;
 GRANT UPDATE (operation) ON riswan_control.secret_rotations TO riswan_control_runtime;

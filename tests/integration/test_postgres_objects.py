@@ -1555,7 +1555,13 @@ def test_postgres_case_report_honors_evidence_export_denial(
 
 
 def test_postgres_secret_lifecycle_and_credential_leases(
-    hosted_postgres, postgres_pool, postgres_identity_pool, postgres_control_pool, tmp_path
+    hosted_postgres,
+    postgres_pool,
+    postgres_identity_pool,
+    postgres_control_pool,
+    tmp_path,
+    monkeypatch,
+    record_property,
 ):
     from datetime import UTC, datetime, timedelta
     from unittest.mock import Mock
@@ -1636,6 +1642,16 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     assert send(secret, foreign=True)[0] == 404
     app = compose()
     assert send(secret)[1]["current_version"] == key
+    failed = str(uuid4())
+
+    def fail_write(*args):
+        raise RuntimeError(value)
+
+    with monkeypatch.context() as patches:
+        patches.setattr(provider, "put", fail_write)
+        assert send(secret + "/rotate", "POST", {"operation_id": failed, "value": value})[0] == 503
+    assert send(secret)[1]["current_version"] == key
+    assert any(row["outcome"] == "failed" for row in send(secret + "/audit")[1])
     rotation = {"operation_id": version, "value": value}
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert list(
@@ -1720,7 +1736,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 broker.execute(request.integration_id, "collect") == credential.execute.return_value
             )
 
-    with postgres_control_pool.connection() as db, db.transaction():
+    with postgres_control_pool.connection() as db, db.transaction(force_rollback=True):
         assert db.execute("SELECT count(*) FROM riswan_control.secret_metadata").fetchone() == (0,)
         db.execute(
             """SELECT set_config('riswan.control_actor', %s, true),
@@ -1738,6 +1754,35 @@ def test_postgres_secret_lifecycle_and_credential_leases(
             "SELECT request FROM riswan_control.credential_bindings",
         ):
             assert value not in str(db.execute(query).fetchall())
+        db.execute(
+            """INSERT INTO riswan_control.secret_versions(secret_id, id, version)
+            SELECT %s, md5('plan-version-' || i)::uuid::text,
+                   json_build_object('id', md5('plan-version-' || i)::uuid::text)::text
+            FROM generate_series(1,256) g(i)""",
+            (key,),
+        )
+        for name, query in (
+            (
+                "secret_metadata",
+                "SELECT metadata FROM riswan_control.secret_metadata WHERE id = %s AND tenant_id = %s AND product = 'ir'",
+            ),
+            (
+                "secret_versions",
+                "SELECT version FROM riswan_control.secret_versions WHERE secret_id = %s AND tenant_id = %s AND product = 'ir' ORDER BY rowid DESC LIMIT 100",
+            ),
+            (
+                "secret_audit",
+                "SELECT event FROM riswan_control.secret_access_events WHERE secret_id = %s AND tenant_id = %s AND product = 'ir' ORDER BY sequence DESC LIMIT 100",
+            ),
+        ):
+            plan = db.execute(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, (key, tenant_id)
+            ).fetchone()[0][0]
+            assert plan["Plan"]["Actual Rows"] > 0
+            record_property(name + "_query_plan", json.dumps(plan))
+        # Make the plan fixture disposable within the surrounding transaction.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("DELETE FROM riswan_control.secret_access_events")
         with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
             db.execute(
                 """UPDATE riswan_control.secret_metadata
