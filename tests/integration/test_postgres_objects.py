@@ -1790,6 +1790,49 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 WHERE id = %s""",
                 (str(uuid4()), key),
             )
+    candidate = str(uuid4())
+    save = service._save
+
+    def fail_promotion(db, item):
+        save(db, item)
+        raise psycopg.OperationalError("simulated promotion failure")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(service, "_save", fail_promotion)
+        assert (
+            send(secret + "/rotate", "POST", {"operation_id": candidate, "value": value})[0] == 503
+        )
+    assert send(secret)[1]["current_version"] == key
+    assert (
+        send(secret + "/rotate", "POST", {"operation_id": candidate, "value": value})[1][
+            "current_version"
+        ]
+        == candidate
+    )
+
+    status, _, _ = call(
+        app,
+        f"/v1/organizations/{org['id']}/members/{workload}",
+        "DELETE",
+        cookie=alice,
+        origin="https://app.example",
+    )
+    assert status == 204
+    status, _, _ = call(
+        app,
+        f"/v1/organizations/{org['id']}/workloads",
+        "POST",
+        cookie=alice,
+        origin="https://app.example",
+        payload={"identity_id": str(workload)},
+    )
+    assert status == 204
+    with bind_principal(worker), bind_context(context):
+        with pytest.raises(AccessDenied):
+            service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
+        with pytest.raises(AccessDenied):
+            broker.execute(request.integration_id, "collect")
+    credential.execute.assert_called_once_with(request)
     assert send(secret + "/revoke", "POST")[1]["status"] == "revoked"
     assert send(secret, "DELETE")[1]["status"] == "pending_deletion"
     assert send(secret + "/confirm-deletion", "POST")[1]["status"] == "deleted"
