@@ -161,6 +161,7 @@ def test_table_writes_stay_with_the_owners():
         "riswan_data.case_graph_edges": "riswan_app.postgres_graphs",
         "riswan_data.case_temporal_snapshots": "riswan_app.postgres_intelligence",
         "riswan_data.case_risk_assessments": "riswan_app.postgres_intelligence",
+        "riswan_data.case_memory_history": "riswan_app.postgres_memory",
         "riswan_data.case_memory_snapshots": "riswan_app.postgres_intelligence",
         "riswan_data.case_raw_evidence": "riswan_app.postgres_security_data",
         "riswan_data.case_evidence_receipts": "riswan_app.postgres_security_data",

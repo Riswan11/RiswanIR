@@ -71,3 +71,50 @@ def test_graph_rows_cannot_change_archived_node_metadata(store, client, request_
     ]
     with pytest.raises(NotFoundError, match="Investigation graph unavailable"):
         postgres_graphs.graph_from_rows(db, report["id"], snapshot)
+
+
+@pytest.mark.parametrize("kind", ["temporal", "risk"])
+def test_valid_archive_from_another_investigation_is_denied(store, kind):
+    from riswan_ir.models import InvestigationRequest
+    from tests.integration.test_risk_assessment import restoration
+    from tests.integration.test_temporal_correlation import ROOT, scenario
+
+    case = store.create(
+        InvestigationRequest(
+            title="Archive owner", principal=ROOT, records=scenario(10) + [restoration()]
+        )
+    ).id
+    with store.connect() as db:
+        if kind == "temporal":
+            (snapshot,) = db.execute(
+                "SELECT snapshot FROM temporal_correlations WHERE investigation_id = ?", (case,)
+            ).fetchone()
+            reader = Mock()
+            reader.execute.return_value.fetchone.return_value = (snapshot,)
+            verified = postgres_intelligence.temporal_snapshot(
+                reader, "different-case", sha256(snapshot)
+            )
+            with pytest.raises(NotFoundError, match="Temporal archive unavailable"):
+                postgres_intelligence.parse_temporal("different-case", verified)
+        else:
+            rows = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM risk_assessments WHERE investigation_id = ?", (case,)
+                )
+            ]
+            assert rows
+            for row in rows:
+                row["investigation_id"] = "different-case"
+            reader = Mock()
+            reader.execute.return_value = [
+                (row["ordinal"], row["id"], row["kind"], row["subject_id"], row["archive"])
+                for row in rows
+            ]
+            verified = postgres_intelligence.risk_rows(
+                reader, "different-case", postgres_intelligence.risk_digest(rows)
+            )
+            with pytest.raises(NotFoundError, match="Risk archive unavailable"):
+                postgres_intelligence.parse_risk("different-case", verified)
+        assert reader.execute.call_count == 1
+        assert reader.execute.call_args.args[0].lstrip().startswith("SELECT")

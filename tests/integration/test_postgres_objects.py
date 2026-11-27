@@ -30,7 +30,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 12)]
+        ).fetchall() == [(version,) for version in range(1, 13)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -197,7 +197,7 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     assert send(endpoint, tenant=b, cookie=bob)[0] == 404
     assert send(endpoint, "PATCH", tenant=b, cookie=bob, payload={"title": "Denied"})[0] == 404
     assert send(base, tenant=b, cookie=bob) == (200, [])
-    assert send(endpoint + "/memory", tenant=a)[0] == 501
+    assert send(endpoint + "/memory", tenant=a)[0] in {200, 404}
     assert send(endpoint + "/risk", tenant=a)[0] == 200
     assert send(endpoint + "/knowledge-graph", tenant=a)[0] == 200
     assert send(endpoint + "/knowledge-graph/ontology", tenant=a)[0] == 200
@@ -466,6 +466,61 @@ def test_hosted_postgres_case_preview(postgres_pool, tmp_path, monkeypatch, requ
     history = f"{risk_path}/risk/finding/{assessment['subject_id']}/history"
     assert send(history, tenant=a)[1]["assessments"] == [contained, assessment]
     assert send(risk_path + "/risk/" + contained["id"] + "/replay", tenant=a) == (200, contained)
+    memory_path = risk_path + "/memory"
+    assert send(memory_path, tenant=a)[0] == 200
+    assert send(memory_path, tenant=b, cookie=bob)[0] == 404
+    assert send(
+        risk_path + "/feedback",
+        "POST",
+        tenant=a,
+        payload={"reviewer": "client-claim", "disposition": "benign"},
+    ) == (201, {"recorded": True})
+    assert send(
+        memory_path + "/feedback",
+        "POST",
+        tenant=a,
+        payload={"classification": "authorized_activity", "evidence_references": [reference]},
+    ) == (201, {"recorded": True})
+    assert (
+        send(
+            memory_path + "/feedback",
+            "POST",
+            tenant=b,
+            cookie=bob,
+            payload={"classification": "authorized_activity", "evidence_references": [reference]},
+        )[0]
+        == 404
+    )
+    assert (
+        send(
+            memory_path + "/feedback",
+            "POST",
+            tenant=a,
+            payload={
+                "classification": "authorized_activity",
+                "evidence_references": [reference, reference],
+            },
+        )[0]
+        == 400
+    )
+    independent = [
+        {**event, "eventID": "independent-" + event["eventID"]}
+        for event in scenario(10) + [restoration()]
+    ]
+    status, current_case = send(
+        base,
+        "POST",
+        tenant=a,
+        payload={"title": "Current case", "principal": ROOT, "records": independent},
+    )
+    assert status == 201
+    status, intelligence = send(f"{base}/{current_case['id']}/memory", tenant=a)
+    assert status == 200
+    assert any(
+        match["investigation_id"] == assessed_case["id"]
+        and match["classification"] == "authorized_activity"
+        for match in intelligence["similar_investigations"]
+    )
     assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
         "control.sqlite3",
         "identity.sqlite3",

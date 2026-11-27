@@ -1,7 +1,7 @@
 """PostgreSQL-backed case bundle persistence for the hosted cutover preview."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,7 +12,14 @@ from riswan_ir.correlation.temporal.engine import run as correlate_temporal
 from riswan_ir.correlation.temporal.registry import select_rules
 from riswan_ir.investigation.ports import CaseReader
 from riswan_ir.knowledge_graph.builder import build_security_graph
+from riswan_ir.memory import repository as memory_repository
+from riswan_ir.memory.ingestion import capture_review, promote
+from riswan_ir.memory.intelligence import retrieve
+from riswan_ir.memory.models import Feedback
+from riswan_ir.memory.policy import allowed
+from riswan_ir.memory.policy import policy as memory_policy
 from riswan_ir.models import (
+    AnalystFeedback,
     EvidenceSubmission,
     InvestigationReport,
     InvestigationRequest,
@@ -29,7 +36,13 @@ from riswan_platform.data_protection import LegalHold, Ownership, ProtectionDeni
 from riswan_security_data.integrity import canonical_json, sha256
 from riswan_security_data.provenance import EvidenceProvenance
 
-from . import postgres_events, postgres_graphs, postgres_intelligence, postgres_security_data
+from . import (
+    postgres_events,
+    postgres_graphs,
+    postgres_intelligence,
+    postgres_memory,
+    postgres_security_data,
+)
 from .postgres_case_ownership import PostgresCaseOwnership
 from .postgres_scope import ScopedPostgres
 
@@ -85,6 +98,7 @@ class PostgresCases(CaseReader):
                 "case_temporal_snapshots",
                 "case_risk_assessments",
                 "case_memory_snapshots",
+                "case_memory_history",
                 *postgres_security_data.TABLES,
             ),
         )
@@ -313,11 +327,21 @@ class PostgresCases(CaseReader):
             assessments = list(latest.values())
         return assessments[offset : offset + limit]
 
-    def reassess(self, case: str, request: Reassessment) -> Assessment:
+    def risk_parent(self, case: str) -> str | None:
+        with self._scope.transaction() as (db, _):
+            row = db.execute(
+                "SELECT parent_id FROM riswan_data.investigations WHERE investigation_id = %s",
+                (case,),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("Investigation not found.")
+            return row[0]
+
+    def reassess(self, case: str, request: Reassessment, *, parent: str | None) -> Assessment:
         with self._scope.transaction() as (db, context):
             self._lock_case(db, case)
             report, artifacts = self._bundle(db, case)
-            if "risk_digest" not in artifacts or report.previous_investigation_id:
+            if "risk_digest" not in artifacts or report.previous_investigation_id != parent:
                 raise NotFoundError("Reassessment unavailable for this case.")
             old_ids = {row["id"] for row in artifacts["risk_assessments"]}
             with self._compiler.connect() as staging:
@@ -325,6 +349,26 @@ class PostgresCases(CaseReader):
                 self._restore(staging, artifacts)
                 if not evidence_store.verify(staging, case, report).valid:
                     raise ValueError("Risk reassessment requires verified investigation evidence.")
+                if parent is not None:
+                    parent_report, parent_artifacts = self._bundle(db, parent)
+                    self._compiler.seed_transient_parent(staging, parent_report)
+                    risk = parent_artifacts["risk_assessments"]
+                    # SQLite ordinals identify rows only within the transient workspace.
+                    staging.executemany(
+                        ARTIFACT_INSERTS["risk_assessments"],
+                        [
+                            (
+                                None,
+                                row["id"],
+                                parent,
+                                row["kind"],
+                                row["subject_id"],
+                                row["archive"],
+                            )
+                            for row in risk
+                        ],
+                    )
+                postgres_memory.restore_history(db, staging, case, for_write=True)
                 assessed = self._compiler._score_existing_risk(
                     staging, case, datetime.now(UTC).isoformat(), "reassessment", request
                 )
@@ -333,7 +377,7 @@ class PostgresCases(CaseReader):
                 added = [
                     dict(row)
                     for row in staging.execute(ARTIFACT_QUERIES["risk_assessments"])
-                    if row["id"] not in old_ids
+                    if row["investigation_id"] == case and row["id"] not in old_ids
                 ]
             postgres_intelligence.append_risk(db, context, case, added)
             return assessed
@@ -419,10 +463,25 @@ class PostgresCases(CaseReader):
 
     def evidence_ids(self, case: str, *, raw: bool = False) -> tuple[str, ...]:
         with self._scope.transaction() as (db, _):
-            report, bundle = self._bundle(db, case)
-            if raw:
-                return tuple(f"raw/{item['raw_id']}" for item in bundle["evidence_receipts"])
-            return tuple(item.id for item in report.evidence)
+            row = db.execute(
+                """SELECT report->'evidence', artifacts->'evidence_receipts',
+                          artifacts ? 'security_data_digest'
+                FROM riswan_data.investigations WHERE investigation_id = %s""",
+                (case,),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("Investigation not found.")
+            if not raw:
+                return tuple(item["id"] for item in row[0] or ())
+            if not row[2]:
+                return tuple(f"raw/{item['raw_id']}" for item in row[1])
+            return tuple(
+                f"raw/{entry[0]}"
+                for entry in db.execute(
+                    "SELECT raw_id FROM riswan_data.case_evidence_receipts WHERE investigation_id = %s",
+                    (case,),
+                )
+            )
 
     def get(
         self, investigation_id: str, *, related_ids: tuple[str, ...] | None = None
@@ -514,6 +573,97 @@ class PostgresCases(CaseReader):
                 created_at=row[0],
                 released_at=row[1],
             )
+
+    @staticmethod
+    def _stage_memory(staging, case, archive):
+        for table in postgres_intelligence.MEMORY_ARTIFACTS:
+            columns = tuple(
+                item[0] for item in staging.execute(ARTIFACT_QUERIES[table]).description
+            )
+            staging.executemany(
+                ARTIFACT_INSERTS[table],
+                [tuple(row[key] for key in columns) for row in archive[table]],
+            )
+
+    def memory_intelligence(self, case, as_of=None, *, case_ids):
+        with self._scope.transaction() as (db, context), self._compiler.connect() as staging:
+            self._lock_case(db, case)
+            timestamp = datetime.now(UTC).isoformat()
+            cutoff = utc_timestamp(as_of or timestamp)
+            archive = postgres_memory.snapshot(db, case)
+            self._seed_memory_profile(staging, case, archive, timestamp)
+            live = memory_policy()
+            config = memory_repository.archived_policy(staging, case)
+            profile = memory_repository.read(staging, case, live, timestamp)
+            if config is None or profile is None:
+                raise NotFoundError("Indexed historical profile not found.")
+            ids = postgres_memory.candidates(
+                db,
+                context,
+                case_ids,
+                allowed(profile.scope, live) & allowed(profile.scope, config),
+                cutoff.isoformat(),
+                (cutoff - timedelta(days=config.observation_days)).isoformat(),
+                timestamp,
+            )
+            for candidate in ids:
+                if candidate != case:
+                    previous = postgres_memory.snapshot(db, candidate)
+                    self._seed_memory_profile(staging, candidate, previous, timestamp)
+                    postgres_memory.restore_history(
+                        db,
+                        staging,
+                        candidate,
+                        cutoff=memory_repository.time_key(cutoff.isoformat()),
+                    )
+            result = retrieve(
+                staging,
+                profile,
+                config,
+                cutoff.isoformat(),
+                timestamp,
+                authorization=live,
+                case_ids=ids,
+            )
+            postgres_memory.append_history(db, context, staging, case, {"audit": 0})
+            return result
+
+    @staticmethod
+    def _seed_memory_profile(staging, case, archive, timestamp):
+        # The evaluator only needs the indexed records. Never copy candidate raw evidence.
+        staging.execute("INSERT INTO main.investigations VALUES (?, ?, '{}')", (case, timestamp))
+        PostgresCases._stage_memory(staging, case, archive)
+
+    def memory_feedback(self, case: str, feedback: Feedback | AnalystFeedback) -> None:
+        with self._scope.transaction() as (db, context), self._compiler.connect() as staging:
+            self._lock_case(db, case)
+            postgres_memory.snapshot(db, case)
+            report, artifacts = self._bundle(db, case)
+            self._compiler.seed_transient_parent(staging, report)
+            self._restore(staging, artifacts)
+            postgres_memory.restore_history(db, staging, case, for_write=True)
+            before = {
+                kind: max((row[0] for row in staging.execute(query)), default=0)
+                for kind, (query, _) in postgres_memory.HISTORY_QUERIES.items()
+            }
+            config = memory_policy()
+            current = datetime.now(UTC).isoformat()
+            if isinstance(feedback, AnalystFeedback):
+                staging.execute(
+                    """INSERT INTO main.reviews(investigation_id, reviewer, disposition, notes, created_at)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (case, context.actor_id, feedback.disposition, feedback.notes, current),
+                )
+                verification = evidence_store.verify(staging, case, report)
+                if (
+                    verification.valid
+                    and verification.custody_checked
+                    and not verification.expired_raw
+                ):
+                    capture_review(staging, case, feedback.disposition, config, current)
+            else:
+                promote(staging, report, feedback, config, current)
+            postgres_memory.append_history(db, context, staging, case, before)
 
     def memory_remove(self, case: str) -> None:
         with self._scope.transaction() as (db, context):

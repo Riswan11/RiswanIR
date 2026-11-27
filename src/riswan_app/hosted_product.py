@@ -3,13 +3,19 @@
 import json
 import re
 from dataclasses import replace
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qs, parse_qsl
 from uuid import UUID
 
 from riswan_ir.api.http import Application
 from riswan_ir.correlation.temporal.service import serve as serve_temporal
 from riswan_ir.knowledge_graph.service import serve_graph
-from riswan_ir.models import EvidenceSubmission, InvestigationRequest, InvestigationSummary
+from riswan_ir.memory.models import Feedback
+from riswan_ir.models import (
+    AnalystFeedback,
+    EvidenceSubmission,
+    InvestigationRequest,
+    InvestigationSummary,
+)
 from riswan_ir.product import IRProduct
 from riswan_ir.risk.models import Reassessment
 from riswan_ir.risk.service import serve as serve_risk
@@ -190,6 +196,24 @@ class HostedPostgresCases:
             ).payload()
         if method == "POST" and suffix.startswith("/legal-holds"):
             return self._hold(env, case_id, suffix)
+        if method == "GET" and suffix == "/memory":
+            guard.require(Permission.MEMORY, scope.kind, scope.id)
+            self._evidence(guard, scope)
+            query = env.get("QUERY_STRING", "")
+            if len(query) > 512:
+                raise ValueError("Memory query is too large.")
+            params = parse_qs(query, strict_parsing=True, keep_blank_values=True, max_num_fields=2)
+            if set(params) - {"as_of"} or len(params.get("as_of", [])) > 1:
+                raise ValueError("Provide at most one as_of timestamp.")
+            return 200, self.store.memory_intelligence(
+                case_id, params.get("as_of", [None])[0], case_ids=self._memory_cases(guard)
+            ).payload()
+        if method == "POST" and suffix in {"/feedback", "/memory/feedback"}:
+            guard.require(Permission.FEEDBACK, scope.kind, scope.id)
+            self._evidence(guard, scope)
+            model = Feedback if suffix == "/memory/feedback" else AnalystFeedback
+            self.store.memory_feedback(case_id, model.model_validate(Application.body(env)))
+            return 201, {"recorded": True}
         if method == "DELETE" and suffix == "/memory":
             guard.require(Permission.MEMORY_MANAGE, scope.kind, scope.id)
             self._evidence(guard, scope)
@@ -208,7 +232,14 @@ class HostedPostgresCases:
             self._evidence(guard, scope)
             self._evidence(guard, scope, raw=True)
             request = Reassessment.model_validate(Application.body(env))
-            return 200, self.store.reassess(case_id, request).payload()
+            parent = self.store.risk_parent(case_id)
+            if parent is not None:
+                parent_scope = Scope(ScopeType.INVESTIGATION, parent)
+                guard.require(Permission.READ, parent_scope.kind, parent_scope.id)
+                guard.require(Permission.RISK, parent_scope.kind, parent_scope.id)
+                self._evidence(guard, parent_scope)
+                self._evidence(guard, parent_scope, raw=True)
+            return 200, self.store.reassess(case_id, request, parent=parent).payload()
         graph_route = suffix == "/knowledge-graph" or suffix.startswith("/knowledge-graph/")
         temporal_route = suffix in {
             "/temporal-correlation",
@@ -321,6 +352,18 @@ class HostedPostgresCases:
             except AccessDenied:
                 result.pop("previous_investigation_id", None)
         return 200, result
+
+    def _memory_cases(self, guard: Enforcement) -> tuple[str, ...]:
+        readable = set(guard.investigation_ids())
+        authorized = []
+        for candidate in guard.investigation_ids(Permission.MEMORY):
+            if candidate in readable:
+                try:
+                    self._evidence(guard, Scope(ScopeType.INVESTIGATION, candidate))
+                except (AccessDenied, NotFoundError):
+                    continue
+                authorized.append(candidate)
+        return tuple(authorized)
 
     def _evidence(self, guard: Enforcement, scope: Scope, *, raw: bool = False) -> None:
         guard.require(Permission.EVIDENCE, scope.kind, scope.id)

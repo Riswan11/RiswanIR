@@ -21,6 +21,7 @@ MIGRATIONS = (
     "0009_correlation_risk.sql",
     "0010_graph_relationships.sql",
     "0011_memory_snapshots.sql",
+    "0012_memory_history.sql",
 )
 
 
