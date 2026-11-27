@@ -582,19 +582,20 @@ class Secrets:
                     ).fetchone()
                     if joined is None or not self.tenancy.active_workload(policy.workload_id):
                         raise AccessDenied
-                    conflict = (
-                        "ON CONFLICT (secret_id, workload_id, purpose) "
-                        if self.repository.initializes_sqlite_schema
-                        else "ON CONFLICT (secret_id, workload_id, purpose, tenant_id, product) "
-                    )
-                    db.execute(
+                    statement = (
                         """INSERT INTO secret_consumer_policies
                         (secret_id, workload_id, purpose, policy, membership_joined)
-                        VALUES (?, ?, ?, ?, ?) """
-                        + conflict
-                        + "DO UPDATE SET policy = excluded.policy, membership_joined = excluded.membership_joined",
-                        (*keys, policy.model_dump_json(), joined[0]),
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (secret_id, workload_id, purpose)
+                        DO UPDATE SET policy = excluded.policy, membership_joined = excluded.membership_joined"""
+                        if self.repository.initializes_sqlite_schema
+                        else """INSERT INTO secret_consumer_policies
+                        (secret_id, workload_id, purpose, policy, membership_joined)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (secret_id, workload_id, purpose, tenant_id, product)
+                        DO UPDATE SET policy = excluded.policy, membership_joined = excluded.membership_joined"""
                     )
+                    db.execute(statement, (*keys, policy.model_dump_json(), joined[0]))
 
     def use(
         self, reference: SecretReference, purpose: str, consume: Callable[[SecretMaterial], Result]
