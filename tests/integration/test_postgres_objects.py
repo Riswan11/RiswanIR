@@ -887,3 +887,59 @@ def test_hosted_postgres_recurrence_and_point_in_time_baseline(hosted_postgres, 
     assert [item["investigation_id"] for item in limited["similar_investigations"]] == [
         second.rsplit("/", 1)[-1]
     ]
+
+
+def test_hosted_postgres_temporal_late_event_and_duplicate_revision(hosted_postgres, monkeypatch):
+    from urllib.parse import urlencode
+
+    from tests.integration.test_temporal_correlation import ROOT, context, scenario
+
+    app, send, _, bob, tenant, other = hosted_postgres
+    app._authenticated_routes.product.store._compiler.detection_context = context()
+    events = scenario(5)
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: "2025-01-01T04:00:00+00:00")
+    status, root = send(
+        "/v1/investigations",
+        "POST",
+        tenant=tenant,
+        payload={"title": "Late supplemental evidence", "principal": ROOT, "records": events[:1]},
+    )
+    assert status == 201
+    root_path = f"/v1/investigations/{root['id']}"
+    status, initial = send(root_path + "/temporal-correlation", tenant=tenant)
+    assert status == 200 and initial["partial_matches"]
+    assert send(root_path + "/incidents", tenant=tenant) == (200, {"incidents": []})
+
+    monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: "2025-02-01T04:00:00+00:00")
+    status, completed = send(
+        root_path + "/revisions", "POST", tenant=tenant, payload={"records": events[1:]}
+    )
+    assert status == 201
+    child_path = f"/v1/investigations/{completed['id']}"
+    status, result = send(child_path + "/incidents", tenant=tenant)
+    assert status == 200
+    (incident,) = result["incidents"]
+    assert len({item["ingested_at"] for item in incident["timeline"]}) == 2
+    assert {item["event_id"] for item in incident["timeline"]} == {e["eventID"] for e in events}
+    assert send(child_path + f"/incidents/{incident['incident_id']}", tenant=tenant) == (
+        200,
+        incident,
+    )
+    assert send(child_path + "/incidents", tenant=other, cookie=bob)[0] == 404
+
+    status, retry = send(
+        child_path + "/revisions", "POST", tenant=tenant, payload={"records": events[1:]}
+    )
+    assert status == 201
+    retry_path = f"/v1/investigations/{retry['id']}"
+    status, replay = send(retry_path + "/temporal-correlation/replay", tenant=tenant)
+    assert status == 200
+    assert replay["incidents"] == [incident]
+    selected = urlencode(
+        [("version", rule["id"] + "=" + rule["version"]) for rule in replay["rules"]]
+    )
+    assert send(retry_path + "/temporal-correlation/replay", tenant=tenant, query=selected) == (
+        200,
+        replay,
+    )
+    assert send(root_path + "/temporal-correlation", tenant=tenant) == (200, initial)
