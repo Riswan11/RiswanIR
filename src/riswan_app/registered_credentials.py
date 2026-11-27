@@ -65,9 +65,17 @@ class RegisteredCredentialBroker:
                 registered.request.resource.namespace,
                 Capability.CREDENTIAL_ISSUE,
             )
+            if not self._service.repository.initializes_sqlite_schema:
+                self._persist_binding(registered)
             lease = provider.execute(registered.request)
             if lease.expires_at <= self._service.clock():
                 raise AccessDenied
+            if not self._service.repository.initializes_sqlite_schema:
+                with self._service.repository._connection() as db:
+                    db.execute(
+                        "INSERT INTO credential_leases VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (*self._scope(registered), str(lease.id), lease.expires_at),
+                    )
             self._service._audit(
                 context,
                 integration_id,
@@ -79,3 +87,40 @@ class RegisteredCredentialBroker:
                 target_cloud=registered.request.resource.namespace.cloud,
             )
             return lease
+
+    @staticmethod
+    def _scope(registered: CredentialRegistration) -> tuple[str, ...]:
+        return (
+            str(registered.tenant_id),
+            registered.product_id,
+            str(registered.request.integration_id),
+            str(registered.request.workload_id),
+            registered.membership_joined,
+        )
+
+    def _persist_binding(self, registered: CredentialRegistration) -> None:
+        scope = self._scope(registered)
+        instance = str(registered.instance_id)
+        payload = registered.request.model_dump_json()
+        with self._service.repository._connection() as db:
+            self._service._persist_provider(
+                db,
+                scope[0],
+                scope[1],
+                registered.instance_id,
+                registered.request.resource.namespace.model_dump_json(),
+            )
+            db.execute(
+                """INSERT INTO credential_bindings
+                (tenant_id, product, integration_id, workload_id, membership_joined, instance_id, request)
+                VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+                (*scope, instance, payload),
+            )
+            row = db.execute(
+                """SELECT instance_id, request FROM credential_bindings
+                WHERE tenant_id = ? AND product = ? AND integration_id = ?
+                AND workload_id = ? AND membership_joined = ?""",
+                scope,
+            ).fetchone()
+            if row is None or tuple(row) != (instance, payload):
+                raise AccessDenied

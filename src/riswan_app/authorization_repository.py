@@ -31,6 +31,9 @@ from riswan_platform.authorization.enforcement import AccessDenied
 class AuthorizationRepository:
     initializes_sqlite_schema = True
 
+    def bind_secret_product(self, product: str) -> None:
+        """SQLite secret operations use service resource predicates."""
+
     def bind_scope(self, tenant: str, organization: str | None = None) -> None:
         """SQLite scope is enforced by the trusted service predicates."""
 

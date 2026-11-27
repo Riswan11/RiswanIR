@@ -32,7 +32,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 15)]
+        ).fetchall() == [(version,) for version in range(1, 16)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -1552,3 +1552,200 @@ def test_postgres_case_report_honors_evidence_export_denial(
     assert status == 200
     assert "canonical_events" not in report
     assert send(detail + "/events", tenant=tenant)[0] == 404
+
+
+def test_postgres_secret_lifecycle_and_credential_leases(
+    hosted_postgres, postgres_pool, postgres_identity_pool, postgres_control_pool, tmp_path
+):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    import psycopg
+
+    from riswan_app.identity_runtime import compose_identity
+    from riswan_app.registered_credentials import CredentialRegistration, RegisteredCredentialBroker
+    from riswan_app.secret_providers import MemoryProvider
+    from riswan_app.secret_routing import SecretDestination, SecretRouting
+    from riswan_platform.authorization.enforcement import AccessDenied
+    from riswan_platform.core.context import bind_context
+    from riswan_platform.identity.principal import bind_principal
+    from riswan_platform.secrets import CredentialLease, SecretReference
+    from riswan_platform.secrets.providers import (
+        Binding,
+        Capability,
+        CredentialRequest,
+        Entry,
+        ExternalReference,
+        GCPNamespace,
+        Registry,
+    )
+    from tests.integration.test_identity_runtime import call
+
+    _, _, alice, bob, tenant_id, other = hosted_postgres
+    tenant = UUID(tenant_id)
+    provider, instance = MemoryProvider(), uuid4()
+    namespace = GCPNamespace(project="synthetic", location="global")
+    binding = Binding(
+        instance_id=instance,
+        tenant_id=tenant,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.SECRET_READ, Capability.SECRET_WRITE, Capability.SECRET_DELETE},
+        development_only=True,
+    )
+    routing = SecretRouting(
+        Registry([Entry(binding, provider)], environment="test"),
+        {(tenant, "ir"): SecretDestination(instance, namespace)},
+    )
+
+    def compose():
+        return compose_identity(
+            tmp_path / "oidc.json",
+            None,
+            tmp_path / "workstation.sqlite3",
+            postgres_control_pool=postgres_control_pool,
+            postgres_case_pool=postgres_pool,
+            postgres_identity_pool=postgres_identity_pool,
+            enable_postgres_preview=True,
+            preview_secret_routing=routing,
+        )
+
+    app = compose()
+    value = "synthetic-provider-only-marker"
+    key, version = str(uuid4()), str(uuid4())
+    base = "/v1/secrets"
+    secret = f"{base}/{key}"
+
+    def send(path, method="GET", payload=None, *, foreign=False):
+        status, _, body = call(
+            app,
+            path,
+            method,
+            cookie=bob if foreign else alice,
+            tenant=other if foreign else tenant_id,
+            origin="https://app.example",
+            payload=payload,
+        )
+        assert value not in json.dumps(body)
+        return status, body
+
+    assert (
+        send(base, "POST", {"id": key, "kind": "api_key", "name": "Fixture", "value": value})[0]
+        == 201
+    )
+    assert send(secret, foreign=True)[0] == 404
+    app = compose()
+    assert send(secret)[1]["current_version"] == key
+    rotation = {"operation_id": version, "value": value}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(
+            pool.map(
+                lambda _: send(secret + "/rotate", "POST", rotation)[1]["current_version"], range(2)
+            )
+        ) == [version, version]
+    assert send(secret + "/rollback", "POST", {"version_id": key})[1]["current_version"] == key
+
+    _, _, worker_data = call(app, "/v1/identity/me", authorization="Bearer test-workload-token")
+    workload = UUID(worker_data["identity_id"])
+    _, _, organizations = call(app, "/v1/organizations", cookie=alice)
+    org = next(item for item in organizations if item["tenant_id"] == tenant_id)
+    status, _, _ = call(
+        app,
+        f"/v1/organizations/{org['id']}/workloads",
+        "POST",
+        cookie=alice,
+        origin="https://app.example",
+        payload={"identity_id": str(workload)},
+    )
+    assert status == 204
+    expires = datetime.now(UTC) + timedelta(hours=1)
+    assert (
+        send(
+            secret + "/policy",
+            "PUT",
+            {"workload_id": str(workload), "purpose": "collect", "expires_at": expires.isoformat()},
+        )[0]
+        == 204
+    )
+
+    service = app._authenticated_routes.secrets.service
+    worker = app.service.authenticate("work", bearer="test-workload-token")
+    request = CredentialRequest(
+        integration_id=uuid4(),
+        resource=ExternalReference(namespace=namespace, native_id="fixture"),
+        workload_id=workload,
+        purpose="collect",
+        audience="fixture",
+    )
+    credential = Mock()
+    credential.execute.return_value = CredentialLease(id=uuid4(), expires_at=expires)
+    registry = Registry(
+        [
+            Entry(
+                binding.model_copy(update={"capabilities": {Capability.CREDENTIAL_ISSUE}}),
+                credential,
+            )
+        ],
+        environment="test",
+    )
+    with bind_principal(worker):
+        repo = service.repository
+        with repo.transaction():
+            context = service.tenancy.context_for(worker, tenant, "ir", "work")
+            with repo._connection() as conn:
+                joined = conn.execute(
+                    "SELECT joined_at FROM organization_memberships WHERE tenant_id = ? AND identity_id = ?",
+                    (tenant_id, str(workload)),
+                ).fetchone()[0]
+        assert context is not None
+        broker = RegisteredCredentialBroker(
+            service,
+            registry,
+            {
+                request.integration_id: CredentialRegistration(
+                    instance, tenant, "ir", joined, request
+                )
+            },
+        )
+        with bind_context(context):
+            assert service.use(
+                SecretReference(id=UUID(key)),
+                "collect",
+                lambda item: item.value.get_secret_value() == value,
+            )
+            with pytest.raises(AccessDenied):
+                broker.execute(request.integration_id, "unapproved")
+            credential.execute.assert_not_called()
+            assert (
+                broker.execute(request.integration_id, "collect") == credential.execute.return_value
+            )
+
+    with postgres_control_pool.connection() as db, db.transaction():
+        assert db.execute("SELECT count(*) FROM riswan_control.secret_metadata").fetchone() == (0,)
+        db.execute(
+            """SELECT set_config('riswan.control_actor', %s, true),
+            set_config('riswan.control_tenant', %s, true), set_config('riswan.secret_product', 'ir', true)""",
+            (str(workload), tenant_id),
+        )
+        assert db.execute("SELECT id FROM riswan_control.credential_leases").fetchone() == (
+            str(credential.execute.return_value.id),
+        )
+        for query in (
+            "SELECT metadata FROM riswan_control.secret_metadata",
+            "SELECT event FROM riswan_control.secret_access_events",
+            "SELECT version FROM riswan_control.secret_versions",
+            "SELECT operation FROM riswan_control.secret_rotations",
+            "SELECT request FROM riswan_control.credential_bindings",
+        ):
+            assert value not in str(db.execute(query).fetchall())
+        with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
+            db.execute(
+                """UPDATE riswan_control.secret_metadata
+                SET metadata = jsonb_set(metadata::jsonb, '{current_version}', to_jsonb(%s::text))::text
+                WHERE id = %s""",
+                (str(uuid4()), key),
+            )
+    assert send(secret + "/revoke", "POST")[1]["status"] == "revoked"
+    assert send(secret, "DELETE")[1]["status"] == "pending_deletion"
+    assert send(secret + "/confirm-deletion", "POST")[1]["status"] == "deleted"
+    assert not list(tmp_path.glob("*.sqlite3"))
