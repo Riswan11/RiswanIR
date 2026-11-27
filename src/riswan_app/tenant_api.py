@@ -8,7 +8,8 @@ from uuid import UUID
 from riswan_ir.api.http import Application
 from riswan_platform.authorization.enforcement import AccessDenied
 from riswan_platform.core.exceptions import ContextRequiredError
-from riswan_platform.identity.models import VerifiedPrincipal
+from riswan_platform.data_protection import ProtectionDenied
+from riswan_platform.identity.models import ProviderUnavailable, VerifiedPrincipal
 from riswan_platform.tenancy import (
     Acceptance,
     InvitationRequest,
@@ -18,7 +19,7 @@ from riswan_platform.tenancy import (
 )
 
 from .hosted_collection import CollectionAPI
-from .hosted_product import HostedProduct
+from .hosted_product import HostedPostgresCases, HostedProduct
 from .secret_api import BASE as SECRETS_BASE
 from .secret_api import SecretAPI
 from .tenancy import Tenancy
@@ -32,7 +33,7 @@ class TenantAPI:
     def __init__(
         self,
         tenancy: Tenancy,
-        product: HostedProduct,
+        product: HostedProduct | HostedPostgresCases,
         origin: str,
         secrets: SecretAPI | None = None,
         collections: CollectionAPI | None = None,
@@ -69,14 +70,16 @@ class TenantAPI:
         except (AccessDenied, ContextRequiredError):
             try:
                 self.tenancy.record_denial(principal, request_id)
-            except sqlite3.Error:
+            except (ProviderUnavailable, sqlite3.Error):
                 LOGGER.error("Tenant denial audit unavailable")
             return 404, NOT_FOUND
         except (ValueError, RecursionError):
             return 400, {"error": "Invalid request."}
+        except ProtectionDenied:
+            return 409, {"error": "Data protection policy prevents this operation."}
         except FileExistsError:
             return 409, {"error": "Resource already has a decision."}
-        except sqlite3.Error:
+        except (ProviderUnavailable, sqlite3.Error):
             LOGGER.error("Tenant storage unavailable")
             return 503, {"error": "Tenant storage unavailable."}
         except Exception as exc:

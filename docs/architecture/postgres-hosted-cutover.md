@@ -1,0 +1,106 @@
+# PostgreSQL hosted persistence cutover
+
+## Repository migration matrix
+
+| Current contract or repository | SQLite tables and representation | Ownership, dependencies and query patterns | PostgreSQL target and status |
+| --- | --- | --- | --- |
+| CaseReader, CaseRepository, IR resource directory | investigations, investigation_ownership | IR tenant-owned. Creation writes metadata and all analysis artifacts in one transaction. Lists sort by creation time and ID. Revisions link to earlier case IDs. | Ownership insert and directory query implemented under RLS. Case creation, detailed reads and revision transactions remain on SQLite. |
+| Evidence repository and normalized events | raw_evidence, raw_evidence_payloads, tenant_raw_evidence_payloads, evidence_receipts, evidence_transformations, evidence_custody, evidence_schema_migrations | Tenant-scoped via case ownership. Raw IDs and digests are stable. Receipts ordered by ordinal, custody by sequence. Shared digests cannot confer ownership. | Pending. Use tenant/product keys on receipts and custody and same-scope case references. Move payloads to encrypted objects only after Checkpoint A. |
+| Findings and detection | report fields and detection_configuration | Case-owned. Rule versions and detection context are archived with the case. Rule catalogs are shared, immutable configuration. | Pending. Preserve exact report and detection replay inputs before normalizing any search indexes. |
+| Graph repository | security_graphs | Case-owned graph document with nodes, edges and observations. Traversal occurs after case authorization. | Pending. First preserve the scoped snapshot behind the current graph read contract. |
+| Temporal correlation and incidents | temporal_correlations | Case-owned snapshot with shared rule definitions. Replay and lineage use stable evidence and prior case IDs. | Pending. Use tenant-aware references for neighboring case state where persisted. |
+| Risk repository | risk_assessments | Case-owned ordered version history. Replay joins previous and original assessments. | Pending. Constrain history and lineage to the same tenant and product with composite foreign keys. |
+| Historical memory | memory_cases, memory_accounts, memory_records, memory_feedback, memory_responses, memory_tombstones, memory_audit | Case-owned. Candidate selection intersects authorization before time-window ranking and limit. Feedback, removals and tombstones share the case transaction. | Pending. Apply RLS and composite joins before candidate ranking. Verify plans using representative account and time filters. |
+| Analyst review and response | reviews, decisions | Case-owned. Decisions are one per investigation. Review insertion can rescore risk and update memory. | Pending. Preserve the single decision constraint and atomic feedback transaction. |
+| Collection control | collection_receipts, collection_checkpoints, collection_status, collection_pending | Workstation connector state is local. Hosted AWS integration registration is trusted operator configuration. Hosted execution currently creates a tenant-owned SQLite case. | Pending for hosted persistence and any hosted checkpoint state. Keep workstation-only tables local. |
+| Legal holds | investigation_legal_holds, investigation_hold_audit | Case-owned. Active hold lookup and removal share a SQLite write transaction. | Pending. Serialize hold changes and destructive operations by locking the case owner row in PostgreSQL. Preserve audit history and same-scope references. |
+| Tenancy and authorization | organizations, tenants, organization_memberships, organization_invitations, organization_audit_events, authorization_snapshots, authorization_audit_events, tenant_migrations | Organization resources and policy snapshots are tenant-owned. Identity-to-tenant discovery and migration ledgers are platform-owned. Updates serialize with request authorization. | Pending. Migrate control transactions behind existing tenancy and policy contracts. Use narrowly scoped discovery and separate platform-owned policy for membership bootstrap. |
+| Secrets service | secret_metadata, secret_versions, secret_rotations, secret_consumer_policies, secret_access_events | Tenant and product inherited through secret metadata. Native values remain with the configured provider or development encryption provider. | Pending. Retain provider-instance and native-version references, and preserve durable rotation and audit behavior. |
+| Identity service | identities, identity_provider_links, identity_sessions, identity_status_history, authentication_events | Platform-owned, identity-scoped by authentication. Authentication precedes tenant selection. | Separate scope from the tenant migration. Retain existing authentication isolation while defining production identity repository requirements. |
+| Protected objects | protected_objects in local development | Tenant/product-owned encrypted envelope. | PostgreSQL adapter and forced RLS verified in the existing protected-object tests. Hosted raw evidence remains in SQLite. |
+
+## Migration sequence and recovery
+
+The existing numbered PostgreSQL migrations now share a checksum ledger and transaction-level migration lock. Legacy protected-object installations without a ledger can reapply the idempotent first migration. An ordered tenant/product ownership table uses forced RLS. Its index matches recent-case ordering. Representative hosted timeline and history plans remain outstanding.
+
+Route the hosted runtime through PostgreSQL only after the case transaction, subordinate stores and control-plane operations have ported. Preserve the existing PostgreSQL transaction-scope guard, use explicit ownership from verified SQLite rows, and reconcile object references, counts and evidence digests before switching traffic. Keep the source read-only during final verification. Unknown owners stay quarantined. The ownership adapter alone cannot preserve a full investigation, so this change does not import live or legacy case data.
+
+For each repository port, preserve the existing business operations, move SQL behind the existing contracts, and exercise that operation through the authenticated hosted runtime. Once the cutover is enabled, a PostgreSQL configuration or connectivity error must fail closed. There is no production runtime switch in this checkpoint slice.
+
+## A.3 hosted case preview
+
+Trusted application composition can inject a restricted PostgreSQL connection pool using compose_identity(postgres_case_pool=..., enable_postgres_preview=True) with RISWAN_IR_ENV=development. An unset environment, conflicting legacy environment or configured provider blocks the preview. The CLI cannot enable it. The preview requires the existing hosted control database and cannot be combined with a SQLite product database or the hosted collection worker. Supported HTTP operations are case create, authorized report and artifact reads, scoped summary list, title patch, revisions, legal hold create and release, and logical historical memory removal. Unsupported product paths return 501 and database failure returns 503 without opening a SQLite product file. Identity and control operations still use their existing separate SQLite databases.
+
+The investigation uses the existing pipeline in a request-local in-memory SQLite workspace. That runs the same analysis, provenance, evidence verification, graph, temporal, risk and memory assembly code as workstation creation. A single PostgreSQL transaction commits ownership and an investigation bundle containing the report and initial artifacts. There is no persistent SQLite case copy. Forced RLS applies to the ownership and bundle tables and a composite foreign key prevents bundles without ownership in the same tenant and product. The runtime can update the report column for the title operation, while ownership and the archived artifact bundle remain immutable to that role.
+
+Raw evidence has no public retrieval endpoint in this preview. Report fields and individual artifact routes require applicable case and evidence permissions. Revision creation copies the parent into a new bounded workspace, verifies its custody, and appends a new immutable snapshot. A composite PostgreSQL foreign key constrains parent linkage to the same tenant and product. Legal holds, their audit trail, and memory removal markers are separate RLS-protected records. A transaction lock on the case serializes holds and memory removal. Memory removal masks use of historical artifacts while preserving the immutable audit snapshot. Physical purging belongs to Checkpoint C. The preview is intended to exercise scoped hosted case execution and transaction recovery ahead of that port. Raw evidence in PostgreSQL has no application-level envelope encryption until Checkpoint B. No existing data is imported or reassigned.
+
+### Snapshot authority and transition
+
+Canonical case reports, original custody chains, graph snapshots and recorded correlation and scoring inputs describe a specific investigation revision. The PostgreSQL bundle is currently the authoritative immutable snapshot for those inputs. Selected summary metadata can be updated. Raw values, individual provenance records, legal holds, risk history, historical memory and graph indexes have different access, versioning, retention or query needs. A.4 and A.5 must move those concerns into their scoped repositories and make the snapshot refer to the authoritative records at cutover. Cross-investigation memory search and graph query traversal are unavailable in this slice. A migration must verify IDs, digests and references before changing the repository source of truth.
+
+The in-memory SQLite workspace is a transitional compiler. Each operation creates and closes its own connection, forces SQLite temporary storage to memory, and only restores the selected authorized parent. Request and model constraints bound evidence intake. A revision that would exceed the report input limits fails validation. The connection closes after either success or error, and PostgreSQL commits the snapshot and its owner together. Application logging does not intentionally emit workspace records. Host swap, crash dumps, and process memory policy remain deployment controls.
+
+### A.4 initial security-data port
+
+New cases and revisions append canonical events to PostgreSQL rows with an ordinal and an immutable per-case event ID. The composite case foreign key and forced RLS preserve tenant and product scope. The case commit includes the event rows. The authorized events export reads them in original order and checks them against the immutable report snapshot. Preview cases created before the event-table migration can still export the canonical snapshot from PostgreSQL. Raw evidence, provenance and custody remain in the case snapshot pending independent repository ports.
+
+
+### A.4 security repository ownership
+
+| Artifact | PostgreSQL authority for new cases | Mutability and access |
+| --- | --- | --- |
+| Canonical events | investigation_events | Immutable by case and event ID. Timeline sorts by timestamp and ordinal. Authorized export compares events to the immutable report snapshot. |
+| Raw evidence | case_raw_evidence | Content-addressed within a case and scoped to the owning tenant and product. Stores the exact canonical JSON text. The preview has no plaintext raw-evidence HTTP route. |
+| Provenance and receipts | case_evidence_receipts | Immutable original receipt metadata. A composite FK requires the matching raw evidence within the same investigation and scope. Provider and external account fields remain independent of Riswan tenancy. |
+| Normalization mappings | case_evidence_transformations | Immutable per source event with a composite FK to the canonical row. |
+| Custody | case_custody | Ordered by sequence. Runtime grants permit reading and appending. Modification and deletion require a separate privileged path. The case digest and custody verifier detect inconsistent history. |
+| Findings | case_findings | Immutable detection and assessment snapshots. The authorized endpoint compares ordered records against the report snapshot. Rule identifiers, versions and evidence links are preserved in the existing models. |
+
+New cases and revisions commit all security-data rows with ownership and the report. The bundle holds the digest and remaining security-intelligence snapshots. Evidence/provenance/custody authority moves to the dedicated tables for new cases. Existing preview records without the digest use their original PostgreSQL snapshot. There is no persistent SQLite fallback or retrospective import in this slice.
+
+Timeline filters accept a UTC range, canonical type UID, canonical actor identity or resource name/ID, and bounded limit and offset. No time filter is needed for full canonical export. The index follows tenant, product, case, and timestamp ordering. The type-filtered index adds canonical type before time. CI exercises the type query with EXPLAIN and sequential scans disabled to confirm that PostgreSQL can use indexed access for the small fixture. This is not a production performance benchmark.
+
+Hosted preview raw payloads temporarily reside in riswan_data.case_raw_evidence.payload as plaintext under forced RLS and the restricted runtime role. They must be migrated to protected object references during Checkpoint B. Do not send production customer data to this preview. Legacy PostgreSQL copies, WAL and backups require separate retention and removal procedures. Cloud evidence ingestion and broad retention or deletion functionality are outside this checkpoint.
+
+
+### A.5 initial graph port
+
+New cases and revisions store the immutable graph snapshot in case_graph_snapshots, protected by forced RLS and a same-scope case foreign key. The bundle retains its digest and the existing graph query service reads the dedicated snapshot. Earlier preview cases retain their original graph in PostgreSQL. Independent risk, temporal correlation and historical memory repositories remain open.
+
+
+### A.5 independent intelligence persistence
+
+| Artifact | PostgreSQL authority for new cases | Operations and boundaries |
+| --- | --- | --- |
+| Graph | case_graph_snapshots, case_graph_nodes, case_graph_edges | Ordered node and edge rows are read under case scope, compared with the historical snapshot and passed to the existing query service. Composite endpoint foreign keys require both nodes in the same investigation, tenant and product. |
+| Temporal correlation | case_temporal_snapshots | Case read, incident views and deterministic replay use the archived rules, policy, evidence receipt timestamps and lineage. Case creation and revisions append immutable snapshots. |
+| Risk and confidence | case_risk_assessments | Ordered archive rows preserve the original policy, scoring inputs, risk and confidence. Original-case reassessment appends history using the existing scoring logic. Same-case replay is supported. Replaying a revision that refers to an assessment originating in another case requires additional authorized origin resolution. |
+| Historical memory | case_memory_snapshots, investigation_memory_removals | Initial per-case profile, account scopes and expiring records persist independently. Hold enforcement still serializes logical removal. Candidate selection, feedback, behavioral baseline and response-history integration remain pending. |
+
+Every new table uses forced RLS, a scoped primary or foreign key and non-owner runtime grants limited to reading and appending. Case and revision writes include these records in the original transaction. The bundle carries archive digests. Prior preview rows keep their older PostgreSQL snapshots. The risk subject-history index follows scope, kind, subject and ordinal. The current reader verifies archive digests before returning history and still pages case-scoped results in application memory, so production query-plan verification remains pending. No PostgreSQL control cutover or evidence encryption has started.
+
+### A.5 authenticated historical intelligence
+
+The hosted preview serves historical intelligence at GET /v1/investigations/{id}/memory.
+The route requires read, memory and evidence permissions. The case directory checks normalized evidence grants before passing case IDs to PostgreSQL. The snapshot query intersects those IDs with tenant, product, the archived and live account policies, indexing time, retention and logical removal before loading any candidate profiles. The existing deterministic evaluator runs in a transient workspace with only the permitted memory rows. PostgreSQL remains the authoritative store.
+
+case_memory_history owns review, feedback, response and retrieval audit entries. The runtime may append but cannot update or delete entries. The composite foreign key binds each entry to its case snapshot and forced RLS confines reads and writes to the active tenant and product. The application records the authenticated actor and assigns a stable entry UUID. Review and promotion writes serialize on the case row. The existing promotion logic verifies evidence custody, disposition and containment references. The preview applies logical removal while retaining immutable audit records.
+
+Risk reassessment authorizes the linked revision chain and its raw and normalized evidence. The engine uses the case and immediate parent assessment rows. Replay resolves the original assessment along the linked chain. An append cannot overwrite the archived initial entries. Temporal correlation continues to keep partial matches, outcomes, rule versions and replay input in the immutable per-case snapshot.
+
+The PostgreSQL candidate-plan test seeds 1,536 snapshots across three tenant/product scopes. It selects 128 authorized case IDs and applies a 101-row bound. It also seeds 512 temporal snapshots, 4,096 graph nodes, 3,584 graph edges, and 2,048 rows each of risk and feedback history. The test records EXPLAIN ANALYZE with buffers for candidate selection, graph reads, temporal retrieval, risk history, a lineage parent lookup, and cutoff-scoped baseline feedback reads in the CI JUnit artifact. The restricted role runs the queries under RLS. The migration adds an expression index aligned with scope, indexing time, and ordering. Production-scale validation with real cardinality and latency distributions remains pending.
+
+PostgreSQL 17 selected the following plans on this fixture. These single-run timings describe the CI sample and are sensitive to cache and runner load.
+
+| Read | Rows | Access path | Execution ms |
+| --- | ---: | --- | ---: |
+| Memory candidates | 101 | Index scan on memory_snapshot_window and indexed removal lookup | 0.608 |
+| Graph nodes | 8 | Scoped case/ordinal unique index | 0.018 |
+| Graph relationships | 7 | Scoped case/ordinal unique index | 0.019 |
+| Temporal snapshot | 1 | Scoped primary key | 0.014 |
+| Risk history | 4 | Scoped case/ordinal primary key | 0.014 |
+| Revision parent | 1 | Scoped investigation primary key | 0.012 |
+| Baseline feedback history | 4 | Scoped history index followed by sort | 0.035 |
+
+No extra graph, lineage or feedback indexes were needed for this fixture. Candidate selection still inspects JSON account and retention rows, and history reads grow with the number of entries in a case. Verify those costs against larger per-case histories during performance acceptance.

@@ -33,6 +33,11 @@ CREATE TABLE IF NOT EXISTS raw_evidence (
 CREATE TABLE IF NOT EXISTS raw_evidence_payloads (
     raw_id TEXT PRIMARY KEY REFERENCES raw_evidence(id), payload TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tenant_raw_evidence_payloads (
+    tenant_id TEXT NOT NULL, raw_id TEXT NOT NULL REFERENCES raw_evidence(id),
+    payload TEXT NOT NULL, PRIMARY KEY (tenant_id, raw_id)
+);
+CREATE TABLE IF NOT EXISTS evidence_schema_migrations (version INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS evidence_receipts (
     investigation_id TEXT NOT NULL REFERENCES investigations(id),
     ordinal INTEGER NOT NULL, raw_id TEXT NOT NULL REFERENCES raw_evidence(id),
@@ -49,7 +54,45 @@ CREATE TABLE IF NOT EXISTS evidence_custody (
     investigation_id TEXT NOT NULL REFERENCES investigations(id),
     sequence INTEGER NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (investigation_id, sequence)
 );
+CREATE VIEW IF NOT EXISTS case_evidence_payloads AS
+SELECT e.investigation_id, e.ordinal, e.raw_id,
+       CASE WHEN o.tenant_id IS NULL THEN legacy.payload ELSE scoped.payload END AS payload
+FROM evidence_receipts e
+LEFT JOIN investigation_ownership o ON o.investigation_id = e.investigation_id
+LEFT JOIN raw_evidence_payloads legacy ON legacy.raw_id = e.raw_id AND o.tenant_id IS NULL
+LEFT JOIN tenant_raw_evidence_payloads scoped ON scoped.raw_id = e.raw_id AND scoped.tenant_id = o.tenant_id;
 """
+
+
+def split_owned_payloads(db: sqlite3.Connection) -> None:
+    """Copy only receipts with established hosted ownership and validate original digests."""
+    if db.execute("SELECT 1 FROM evidence_schema_migrations WHERE version = 2").fetchone():
+        return
+    rows = db.execute(
+        """SELECT DISTINCT o.tenant_id, e.raw_id, p.payload, r.digest
+        FROM evidence_receipts e
+        JOIN investigation_ownership o ON o.investigation_id = e.investigation_id
+        JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
+        JOIN raw_evidence r ON r.id = e.raw_id"""
+    )
+    for row in rows:
+        if sha256(row["payload"]) != row["digest"]:
+            raise RuntimeError("Cannot migrate evidence with invalid integrity.")
+        db.execute(
+            "INSERT INTO tenant_raw_evidence_payloads VALUES (?, ?, ?)",
+            (row["tenant_id"], row["raw_id"], row["payload"]),
+        )
+    db.execute(
+        """DELETE FROM raw_evidence_payloads
+        WHERE EXISTS (SELECT 1 FROM tenant_raw_evidence_payloads scoped
+                      WHERE scoped.raw_id = raw_evidence_payloads.raw_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM evidence_receipts e LEFT JOIN investigation_ownership o
+            ON o.investigation_id = e.investigation_id
+            WHERE e.raw_id = raw_evidence_payloads.raw_id AND o.tenant_id IS NULL
+        )"""
+    )
+    db.execute("INSERT INTO evidence_schema_migrations VALUES (2)")
 
 
 def ingest(
@@ -61,6 +104,9 @@ def ingest(
 ) -> dict[str, EvidenceProvenance]:
     by_event: dict[str, EvidenceProvenance] = {}
     receipts = []
+    ownership = db.execute(
+        "SELECT tenant_id FROM investigation_ownership WHERE investigation_id = ?", (case_id,)
+    ).fetchone()
     for index, record in enumerate(request.records):
         try:
             payload = canonical_json(record)
@@ -88,12 +134,25 @@ def ingest(
                 update={"evidence_id": raw_id, "raw_integrity_hash": digest}
             )
         db.execute("INSERT OR IGNORE INTO raw_evidence VALUES (?, ?)", (raw_id, digest))
-        db.execute("INSERT OR IGNORE INTO raw_evidence_payloads VALUES (?, ?)", (raw_id, payload))
-        stored = db.execute(
-            """SELECT r.digest, p.payload FROM raw_evidence r JOIN raw_evidence_payloads p
-               ON p.raw_id = r.id WHERE r.id = ?""",
-            (raw_id,),
-        ).fetchone()
+        if ownership is None:
+            db.execute(
+                "INSERT OR IGNORE INTO raw_evidence_payloads VALUES (?, ?)", (raw_id, payload)
+            )
+            stored = db.execute(
+                """SELECT r.digest, p.payload FROM raw_evidence r JOIN raw_evidence_payloads p
+                ON p.raw_id = r.id WHERE r.id = ?""",
+                (raw_id,),
+            ).fetchone()
+        else:
+            db.execute(
+                "INSERT OR IGNORE INTO tenant_raw_evidence_payloads VALUES (?, ?, ?)",
+                (ownership[0], raw_id, payload),
+            )
+            stored = db.execute(
+                """SELECT r.digest, p.payload FROM raw_evidence r JOIN tenant_raw_evidence_payloads p
+                ON p.raw_id = r.id WHERE r.id = ? AND p.tenant_id = ?""",
+                (raw_id, ownership[0]),
+            ).fetchone()
         if stored["digest"] != digest or stored["payload"] != payload:
             raise RuntimeError("Stored raw evidence does not match its address.")
         db.execute(
@@ -238,8 +297,8 @@ def has_retained_case_payloads(db: sqlite3.Connection, case_id: str) -> bool:
     """Expose the case-level evidence retention condition to owning application adapters."""
     return (
         db.execute(
-            """SELECT 1 FROM evidence_receipts e LEFT JOIN raw_evidence_payloads p ON p.raw_id = e.raw_id
-           WHERE e.investigation_id = ? AND p.raw_id IS NULL LIMIT 1""",
+            """SELECT 1 FROM case_evidence_payloads e
+           WHERE e.investigation_id = ? AND e.payload IS NULL LIMIT 1""",
             (case_id,),
         ).fetchone()
         is None
@@ -248,8 +307,8 @@ def has_retained_case_payloads(db: sqlite3.Connection, case_id: str) -> bool:
 
 def raw_rows(db: sqlite3.Connection, case_id: str) -> list[sqlite3.Row]:
     return db.execute(
-        """SELECT DISTINCT r.id, r.digest, p.payload FROM evidence_receipts x
-           JOIN raw_evidence r ON r.id = x.raw_id LEFT JOIN raw_evidence_payloads p ON p.raw_id = r.id
+        """SELECT DISTINCT r.id, r.digest, x.payload FROM case_evidence_payloads x
+           JOIN raw_evidence r ON r.id = x.raw_id
            WHERE x.investigation_id = ? ORDER BY r.id""",
         (case_id,),
     ).fetchall()
@@ -268,8 +327,7 @@ def raw_records(db: sqlite3.Connection, case_id: str) -> list[RawEvidence]:
 
 def original_records(db: sqlite3.Connection, case_id: str) -> list[dict[str, object]]:
     rows = db.execute(
-        """SELECT p.payload FROM evidence_receipts r LEFT JOIN raw_evidence_payloads p
-           ON p.raw_id = r.raw_id WHERE r.investigation_id = ? ORDER BY r.ordinal""",
+        """SELECT r.payload FROM case_evidence_payloads r WHERE r.investigation_id = ? ORDER BY r.ordinal""",
         (case_id,),
     )
     return [json.loads(row["payload"]) for row in rows]
@@ -367,13 +425,15 @@ def expire(db: sqlite3.Connection, policy: EvidenceRetentionPolicy, now: datetim
     cutoff = (now - timedelta(days=policy.days)).astimezone(timezone.utc).isoformat()
     candidates = db.execute(
         """SELECT p.raw_id FROM raw_evidence_payloads p JOIN evidence_receipts r ON r.raw_id = p.raw_id
+           WHERE NOT EXISTS (SELECT 1 FROM investigation_ownership o WHERE o.investigation_id = r.investigation_id)
            GROUP BY p.raw_id HAVING max(julianday(r.ingested_at)) <= julianday(?) ORDER BY p.raw_id""",
         (cutoff,),
     ).fetchall()
     for candidate in candidates:
         raw_id = candidate["raw_id"]
         cases = db.execute(
-            "SELECT DISTINCT investigation_id FROM evidence_receipts WHERE raw_id = ?", (raw_id,)
+            "SELECT DISTINCT e.investigation_id FROM evidence_receipts e LEFT JOIN investigation_ownership o ON o.investigation_id = e.investigation_id WHERE e.raw_id = ? AND o.tenant_id IS NULL",
+            (raw_id,),
         )
         for case in cases:
             append_custody(

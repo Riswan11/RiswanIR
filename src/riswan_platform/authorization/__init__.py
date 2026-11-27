@@ -24,6 +24,7 @@ class Permission(StrEnum):
     SECRET_DELETE = "platform.secrets.delete"
     SECRET_POLICY = "platform.secrets.policy"
     SECRET_AUDIT = "platform.secrets.audit"
+    LEGAL_HOLD = "platform.data_protection.holds.manage"
     READ = "ir.investigation.read"
     CREATE = "ir.investigation.create"
     UPDATE = "ir.investigation.update"
@@ -76,7 +77,8 @@ SECRET_ADMIN = frozenset(
 )
 ROLE_PERMISSIONS = {
     Role.OPERATOR: frozenset({P.IDENTITY_READ}),
-    Role.OWNER: SECRET_ADMIN | frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN, P.AUDIT_READ}),
+    Role.OWNER: SECRET_ADMIN
+    | frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN, P.AUDIT_READ, P.LEGAL_HOLD}),
     Role.ADMIN: {P.SECRET_READ, P.SECRET_CREATE, P.SECRET_ROTATE, P.SECRET_REVOKE}
     | frozenset({P.ORGANIZATION_MANAGE, P.ROLES_ASSIGN}),
     Role.INTEGRATION: frozenset({P.INTEGRATIONS_MANAGE}),
@@ -93,6 +95,7 @@ ROLE_PERMISSIONS = {
 PRIVILEGED = SECRET_ADMIN | frozenset(
     {
         P.ROLES_ASSIGN,
+        P.LEGAL_HOLD,
         P.ORGANIZATION_MANAGE,
         P.INTEGRATIONS_MANAGE,
         P.AUDIT_READ,

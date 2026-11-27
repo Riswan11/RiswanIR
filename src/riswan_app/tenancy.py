@@ -106,10 +106,11 @@ class Tenancy:
         self._active_human = active_human
         self.active_workload = active_workload or (lambda _: False)
         self.evaluator = Evaluator(authorization, authorization)
-        with authorization.atomic() as db:
-            for statement in SCHEMA.split(";"):
-                if statement.strip():
-                    db.execute(statement)
+        if authorization.initializes_sqlite_schema:
+            with authorization.atomic() as db:
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        db.execute(statement)
 
     @staticmethod
     def _actor(principal: VerifiedPrincipal, *, human: bool = False) -> UUID:
@@ -151,13 +152,14 @@ class Tenancy:
         actor = self._actor(principal)
         with self.authorization._connection() as db:
             row = db.execute(
-                """SELECT 1 FROM organization_memberships m JOIN tenants t ON t.id = m.tenant_id
+                """SELECT t.organization_id FROM organization_memberships m JOIN tenants t ON t.id = m.tenant_id
                 WHERE m.tenant_id = ? AND m.identity_id = ? AND m.revoked_at IS NULL
                 AND t.status = 'active'""",
                 (str(tenant_id), str(actor)),
             ).fetchone()
         if row is None:
             return None
+        self.authorization.bind_scope(str(tenant_id), row[0])
         return PlatformContext(
             tenant_id,
             str(actor),
@@ -257,6 +259,7 @@ class Tenancy:
         now = datetime.now(UTC)
         org, tenant = uuid4(), uuid4()
         with self.authorization.atomic() as db:
+            self.authorization.bind_scope(str(tenant), str(org))
             db.execute(
                 "INSERT INTO organizations VALUES (?, ?, ?, ?)",
                 (str(org), request.name, request.settings.model_dump_json(), now.isoformat()),
@@ -296,6 +299,7 @@ class Tenancy:
         if owner and row[6] != MembershipRole.OWNER:
             raise AccessDenied
         tenant = UUID(row[1])
+        self.authorization.bind_scope(row[1], row[0])
         context = PlatformContext(tenant, str(actor), "human", "platform", request_id, request_id)
         resource = Resource(tenant, "platform", Scope(ScopeType.ORGANIZATION, str(tenant)))
         if not self.evaluator.evaluate(
@@ -395,6 +399,7 @@ class Tenancy:
             if row is None:
                 raise AccessDenied
             identifier, tenant, role, inviter = row
+            self.authorization.bind_scope(tenant)
             self._set_role(db, tenant, str(actor), MembershipRole(role), UUID(inviter))
             db.execute(
                 "UPDATE organization_invitations SET closed_at = ? WHERE tenant_id = ? AND identity_id = ? AND closed_at IS NULL",

@@ -2,11 +2,13 @@
 
 import os
 import sqlite3
-from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from riswan_platform.identity.models import (
@@ -50,7 +52,7 @@ def _time(value: float) -> datetime:
     return datetime.fromtimestamp(value, timezone.utc)
 
 
-def _identity(row: sqlite3.Row) -> PlatformIdentity:
+def _identity(row: Mapping[str, Any]) -> PlatformIdentity:
     return PlatformIdentity(
         UUID(row["id"]),
         IdentityType(row["kind"]),
@@ -64,7 +66,7 @@ def _identity(row: sqlite3.Row) -> PlatformIdentity:
     )
 
 
-def _session(row: sqlite3.Row) -> Session:
+def _session(row: Mapping[str, Any]) -> Session:
     return Session(
         UUID(row["id"]),
         UUID(row["identity_id"]),
@@ -75,7 +77,11 @@ def _session(row: sqlite3.Row) -> Session:
     )
 
 
-def _audit(db: sqlite3.Connection, event: AuditEvent) -> None:
+class IdentityConnection(Protocol):
+    def execute(self, statement: str, parameters: tuple[Any, ...] = ()) -> Any: ...
+
+
+def _audit(db: IdentityConnection, event: AuditEvent) -> None:
     db.execute(
         """INSERT INTO authentication_events
            (event_type, actor_id, identity_type, method, mfa, request_id, outcome, occurred)
@@ -93,30 +99,21 @@ def _audit(db: sqlite3.Connection, event: AuditEvent) -> None:
     )
 
 
-class SQLiteIdentityRepository:
-    def __init__(self, path: Path):
-        self.path = path
-        if os.name == "posix":
-            try:
-                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-            except FileExistsError:
-                pass
-        with self._connect() as db:
-            db.executescript(SCHEMA)
+class IdentityRepository(ABC):
+    """Shared identity state transitions for the SQLite and PostgreSQL adapters."""
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.row_factory = sqlite3.Row
-            db.execute("PRAGMA foreign_keys = ON")
-            yield db
+    @abstractmethod
+    def _connect(self) -> AbstractContextManager[IdentityConnection]: ...
+
+    @abstractmethod
+    def _begin_write(self, db: IdentityConnection) -> None: ...
 
     def is_active_human(self, identity_id: UUID) -> bool:
         with self._connect() as db:
             row = db.execute(
                 "SELECT kind, status FROM identities WHERE id = ?", (str(identity_id),)
             ).fetchone()
-            return row is not None and tuple(row) == ("human", "active")
+            return row is not None and (row["kind"], row["status"]) == ("human", "active")
 
     def is_active_workload(self, identity_id: UUID) -> bool:
         with self._connect() as db:
@@ -130,7 +127,7 @@ class SQLiteIdentityRepository:
 
     def resolve(self, external: ExternalIdentity, now: datetime) -> PlatformIdentity:
         with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+            self._begin_write(db)
             row = db.execute(
                 """SELECT i.*, l.issuer, l.subject FROM identities i
                    JOIN identity_provider_links l ON l.identity_id = i.id
@@ -197,11 +194,11 @@ class SQLiteIdentityRepository:
         previous_digest: str | None = None,
     ) -> None:
         with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+            self._begin_write(db)
             row = db.execute(
                 "SELECT status FROM identities WHERE id = ?", (str(session.identity_id),)
             ).fetchone()
-            if not row or row[0] != IdentityStatus.ACTIVE:
+            if not row or row["status"] != IdentityStatus.ACTIVE:
                 raise AuthenticationError("Identity unavailable.")
             if previous_digest:
                 changed = db.execute(
@@ -233,7 +230,7 @@ class SQLiteIdentityRepository:
     ) -> VerifiedPrincipal | None:
         instant = now.timestamp()
         with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+            self._begin_write(db)
             row = db.execute(
                 """SELECT i.*, l.issuer, l.subject, s.id AS sid, s.last_seen, s.expires, s.mfa, s.revoked
                    FROM identity_sessions s JOIN identities i ON i.id = s.identity_id
@@ -263,8 +260,8 @@ class SQLiteIdentityRepository:
                 )
                 return None
             db.execute(
-                "UPDATE identity_sessions SET last_seen = MAX(last_seen, ?) WHERE id = ?",
-                (instant, row["sid"]),
+                "UPDATE identity_sessions SET last_seen = CASE WHEN last_seen < ? THEN ? ELSE last_seen END WHERE id = ?",
+                (instant, instant, row["sid"]),
             )
             return VerifiedPrincipal(identity, "session", bool(row["mfa"]), UUID(row["sid"]))
 
@@ -281,6 +278,7 @@ class SQLiteIdentityRepository:
 
     def revoke_session(self, actor: UUID, session: UUID, now: datetime, event: AuditEvent) -> bool:
         with self._connect() as db:
+            self._begin_write(db)
             updated = db.execute(
                 "UPDATE identity_sessions SET revoked = ? WHERE identity_id = ? AND id = ? AND revoked IS NULL",
                 (now.timestamp(), str(actor), str(session)),
@@ -293,7 +291,7 @@ class SQLiteIdentityRepository:
         self, actor: UUID, status: IdentityStatus, now: datetime, event: AuditEvent
     ) -> None:
         with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+            self._begin_write(db)
             changed = db.execute(
                 "UPDATE identities SET status = ?, updated = ? WHERE id = ? AND status <> ?",
                 (status, now.timestamp(), str(actor), status),
@@ -317,3 +315,25 @@ class SQLiteIdentityRepository:
     def audit(self, event: AuditEvent) -> None:
         with self._connect() as db:
             _audit(db, event)
+
+
+class SQLiteIdentityRepository(IdentityRepository):
+    def __init__(self, path: Path):
+        self.path = path
+        if os.name == "posix":
+            try:
+                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                pass
+        with self._connect() as db:
+            db.executescript(SCHEMA)
+
+    @contextmanager
+    def _connect(self) -> Iterator[Any]:
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys = ON")
+            yield db
+
+    def _begin_write(self, db: IdentityConnection) -> None:
+        db.execute("BEGIN IMMEDIATE")

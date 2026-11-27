@@ -144,7 +144,9 @@ def retrieve(
             if feedback.classification == "authorized_activity"
             for event in history.observations
             if event.reference in set(feedback.evidence_references)
-            if utc_timestamp(event.observed_at) >= cutoff - timedelta(days=config.observation_days)
+            if cutoff - timedelta(days=config.observation_days)
+            <= utc_timestamp(event.observed_at)
+            <= cutoff
         )
         behavioral = evaluate(profile.observations, eligible, config)
     if not prior:
