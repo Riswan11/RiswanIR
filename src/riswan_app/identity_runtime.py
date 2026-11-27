@@ -19,6 +19,7 @@ from .hosted_collection import CollectionAPI, load_collections
 from .hosted_product import HostedPostgresCases, HostedProduct
 from .identity_repository import SQLiteIdentityRepository
 from .postgres_cases import PostgresCases
+from .postgres_identity import PostgresIdentityRepository
 from .secret_api import SecretAPI
 from .secret_providers import AWSSecretsProvider
 from .secrets import Secrets
@@ -28,17 +29,25 @@ from .tenant_api import TenantAPI
 
 def compose_identity(
     config: Path,
-    identity_db: Path,
+    identity_db: Path | None,
     product_db: Path,
     *,
     control_db: Path | None = None,
     postgres_case_pool: Any = None,
+    postgres_identity_pool: Any = None,
     hosted_db: Path | None = None,
     secrets_region: str | None = None,
     secrets_providers: Path | None = None,
     collection_config: Path | None = None,
     secrets_kms_key: str | None = None,
 ) -> IdentityApplication:
+    if postgres_identity_pool is not None:
+        if identity_db is not None or postgres_case_pool is None:
+            raise ValueError(
+                "PostgreSQL identity requires the hosted preview and no SQLite identity database."
+            )
+    elif identity_db is None:
+        raise ValueError("Configure identity storage.")
     if (secrets_region is None) != (secrets_kms_key is None) or (
         secrets_region and control_db is None
     ):
@@ -69,7 +78,11 @@ def compose_identity(
     if len(data) > 262_144:
         raise ValueError("OIDC configuration is too large.")
     settings = OIDCSettings.model_validate_json(data)
-    identities = SQLiteIdentityRepository(identity_db)
+    identities = (
+        PostgresIdentityRepository(postgres_identity_pool)
+        if identity_db is None
+        else SQLiteIdentityRepository(identity_db)
+    )
     routes = None
     if control_db is not None:
         tenancy = Tenancy(

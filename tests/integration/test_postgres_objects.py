@@ -24,15 +24,29 @@ def postgres_pool():
     with psycopg.connect(connection + " user=postgres", autocommit=True) as admin:
         admin.execute("CREATE ROLE riswan_migration LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("CREATE ROLE riswan_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
+        admin.execute("CREATE ROLE riswan_identity_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("GRANT CREATE ON DATABASE riswan TO riswan_migration")
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         migrate(owner)
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 13)]
+        ).fetchall() == [(version,) for version in range(1, 14)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
+        min_size=1,
+        max_size=1,
+        open=False,
+    ) as pool:
+        yield pool
+
+
+@pytest.fixture(scope="module")
+def postgres_identity_pool(postgres_pool):
+    from psycopg_pool import ConnectionPool
+
+    with ConnectionPool(
+        "host=127.0.0.1 port=5432 dbname=riswan user=riswan_identity_runtime",
         min_size=1,
         max_size=1,
         open=False,
@@ -140,7 +154,7 @@ def test_postgres_case_ownership_scopes_directory_and_sql(postgres_pool):
 
 
 @pytest.fixture
-def hosted_postgres(postgres_pool, tmp_path, monkeypatch):
+def hosted_postgres(postgres_pool, postgres_identity_pool, tmp_path, monkeypatch):
     from datetime import UTC, datetime
 
     from riswan_app import identity_runtime
@@ -163,10 +177,11 @@ def hosted_postgres(postgres_pool, tmp_path, monkeypatch):
     monkeypatch.setattr("riswan_ir.storage.sqlite.now", lambda: datetime.now(UTC).isoformat())
     app = identity_runtime.compose_identity(
         path,
-        tmp_path / "identity.sqlite3",
+        None,
         tmp_path / "workstation.sqlite3",
         control_db=tmp_path / "control.sqlite3",
         postgres_case_pool=postgres_pool,
+        postgres_identity_pool=postgres_identity_pool,
     )
     alice, _ = login(app, "alice")
     bob, _ = login(app, "bob")
@@ -193,7 +208,7 @@ def hosted_postgres(postgres_pool, tmp_path, monkeypatch):
 
 
 def test_hosted_postgres_case_preview(
-    postgres_pool, hosted_postgres, tmp_path, monkeypatch, request_payload
+    postgres_pool, postgres_identity_pool, hosted_postgres, tmp_path, monkeypatch, request_payload
 ):
     from urllib.parse import urlencode
 
@@ -279,10 +294,11 @@ def test_hosted_postgres_case_preview(
     assert status == 201
     restarted = identity_runtime.compose_identity(
         path,
-        tmp_path / "identity.sqlite3",
+        None,
         tmp_path / "workstation.sqlite3",
         control_db=tmp_path / "control.sqlite3",
         postgres_case_pool=postgres_pool,
+        postgres_identity_pool=postgres_identity_pool,
     )
     assert (
         call(
@@ -658,7 +674,6 @@ def test_hosted_postgres_case_preview(
     )
     assert sorted(file.name for file in tmp_path.glob("*.sqlite3")) == [
         "control.sqlite3",
-        "identity.sqlite3",
     ]
 
 
@@ -982,3 +997,93 @@ def test_hosted_postgres_temporal_late_event_and_duplicate_revision(hosted_postg
         replay,
     )
     assert send(root_path + "/temporal-correlation", tenant=tenant) == (200, initial)
+
+
+def test_postgres_identity_session_revocation_and_restart(
+    hosted_postgres, postgres_identity_pool, monkeypatch
+):
+    from datetime import timedelta
+
+    from riswan_app.postgres_identity import PostgresIdentityRepository
+    from tests.integration.test_identity_runtime import call, login
+
+    app, send, alice, _, tenant, _ = hosted_postgres
+    assert send("/v1/investigations", tenant=tenant) == (200, [])
+    status, _, profile = call(app, "/v1/identity/me", cookie=alice)
+    assert status == 200
+    again, _ = login(app, "alice", existing=alice)
+    assert call(app, "/v1/identity/me", cookie=alice)[0] == 401
+    assert call(app, "/v1/identity/me", cookie=again)[2] == profile
+    monkeypatch.setattr(
+        app.service, "repository", PostgresIdentityRepository(postgres_identity_pool)
+    )
+    assert call(app, "/v1/identity/me", cookie=again)[2] == profile
+    status, _, workload = call(app, "/v1/identity/me", authorization="Bearer test-workload-token")
+    assert status == 200 and workload["identity_type"] == "service"
+    assert app.service.repository.is_active_workload(UUID(workload["identity_id"]))
+
+    clock = app.service.clock
+    monkeypatch.setattr(app.service, "clock", lambda: clock() + timedelta(days=2))
+    assert call(app, "/v1/identity/me", cookie=again)[0] == 401
+    monkeypatch.setattr(app.service, "clock", clock)
+    assert call(app, "/v1/identity/me", cookie=again)[0] == 401
+
+
+def test_postgres_identity_runtime_privileges(postgres_pool, postgres_identity_pool):
+    import psycopg
+
+    from riswan_app.postgres_identity import PostgresIdentityRepository
+
+    with pytest.raises(ProtectionDenied):
+        PostgresIdentityRepository(postgres_pool)
+    with postgres_identity_pool.connection() as db:
+        for statement in (
+            "SELECT * FROM riswan_data.investigations",
+            "SELECT * FROM riswan_auth.authentication_events",
+            "DELETE FROM riswan_auth.authentication_events",
+            "UPDATE riswan_auth.identity_provider_links SET identity_id = 'replacement'",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute(statement)
+    with postgres_pool.connection() as db:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("SELECT * FROM riswan_auth.identities")
+
+
+def test_postgres_revocation_audit_failure_rolls_back(hosted_postgres, monkeypatch):
+    import psycopg
+
+    from riswan_app import identity_repository
+    from tests.integration.test_identity_runtime import call
+
+    app, _, alice, _, _, _ = hosted_postgres
+
+    def fail_audit(db, event):
+        raise psycopg.OperationalError("test audit outage")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(identity_repository, "_audit", fail_audit)
+        assert (
+            call(app, "/v1/auth/logout", "POST", cookie=alice, origin="https://app.example")[0]
+            == 503
+        )
+    assert call(app, "/v1/identity/me", cookie=alice)[0] == 200
+    assert (
+        call(app, "/v1/auth/logout", "POST", cookie=alice, origin="https://app.example")[0] == 204
+    )
+    assert call(app, "/v1/identity/me", cookie=alice)[0] == 401
+
+
+def test_postgres_identity_failure_has_no_sqlite_fallback(hosted_postgres, tmp_path, monkeypatch):
+    from psycopg_pool import PoolClosed
+
+    from tests.integration.test_identity_runtime import call
+
+    app, _, alice, _, _, _ = hosted_postgres
+
+    def unavailable():
+        raise PoolClosed("test authentication pool outage")
+
+    monkeypatch.setattr(app.service.repository._pool, "connection", unavailable)
+    assert call(app, "/v1/identity/me", cookie=alice)[0] == 503
+    assert not (tmp_path / "identity.sqlite3").exists()

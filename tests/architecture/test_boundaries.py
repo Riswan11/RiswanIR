@@ -152,6 +152,11 @@ def test_collection_and_pure_domain_do_not_access_owned_tables_directly():
 def test_table_writes_stay_with_the_owners():
     statements = {}
     owners = {
+        "riswan_auth.identities": "riswan_app.identity_repository",
+        "riswan_auth.identity_provider_links": "riswan_app.identity_repository",
+        "riswan_auth.identity_sessions": "riswan_app.identity_repository",
+        "riswan_auth.identity_status_history": "riswan_app.identity_repository",
+        "riswan_auth.authentication_events": "riswan_app.identity_repository",
         "riswan_data.protected_objects": "riswan_app.postgres_objects",
         "riswan_data.investigation_ownership": "riswan_app.postgres_case_ownership",
         "riswan_data.investigations": "riswan_app.postgres_cases",

@@ -118,3 +118,19 @@ def test_valid_archive_from_another_investigation_is_denied(store, kind):
                 postgres_intelligence.parse_risk("different-case", verified)
         assert reader.execute.call_count == 1
         assert reader.execute.call_args.args[0].lstrip().startswith("SELECT")
+
+
+def test_memory_journal_rejects_mismatched_case_metadata():
+    from riswan_app.postgres_memory import restore_history
+
+    when = "2026-01-25T00:00:00.000000+00:00"
+    db = Mock()
+    staging = Mock()
+    db.execute.return_value = [
+        ("feedback", 4, when, [4, "another-case", when, when, "{}", "digest"]),
+    ]
+    with pytest.raises(NotFoundError, match="Historical memory entry unavailable"):
+        restore_history(db, staging, "requested-case", cutoff=when)
+    assert db.execute.call_count == 1
+    assert db.execute.call_args.args[0].lstrip().startswith("SELECT")
+    staging.execute.assert_not_called()
