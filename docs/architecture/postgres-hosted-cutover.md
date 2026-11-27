@@ -90,3 +90,17 @@ case_memory_history owns review, feedback, response and retrieval audit entries.
 Risk reassessment authorizes the linked revision chain and its raw and normalized evidence. The engine uses the case and immediate parent assessment rows. Replay resolves the original assessment along the linked chain. An append cannot overwrite the archived initial entries. Temporal correlation continues to keep partial matches, outcomes, rule versions and replay input in the immutable per-case snapshot.
 
 The PostgreSQL candidate-plan test seeds 1,536 snapshots across three tenant/product scopes. It selects 128 authorized case IDs and applies a 101-row bound. It also seeds 512 temporal snapshots, 4,096 graph nodes, 3,584 graph edges, and 2,048 rows each of risk and feedback history. The test records EXPLAIN ANALYZE with buffers for candidate selection, graph reads, temporal retrieval, risk history, a lineage parent lookup, and cutoff-scoped baseline feedback reads in the CI JUnit artifact. The restricted role runs the queries under RLS. The migration adds an expression index aligned with scope, indexing time, and ordering. Production-scale validation with real cardinality and latency distributions remains pending.
+
+PostgreSQL 17 selected the following plans on this fixture. These single-run timings describe the CI sample and are sensitive to cache and runner load.
+
+| Read | Rows | Access path | Execution ms |
+| --- | ---: | --- | ---: |
+| Memory candidates | 101 | Index scan on memory_snapshot_window and indexed removal lookup | 0.608 |
+| Graph nodes | 8 | Scoped case/ordinal unique index | 0.018 |
+| Graph relationships | 7 | Scoped case/ordinal unique index | 0.019 |
+| Temporal snapshot | 1 | Scoped primary key | 0.014 |
+| Risk history | 4 | Scoped case/ordinal primary key | 0.014 |
+| Revision parent | 1 | Scoped investigation primary key | 0.012 |
+| Baseline feedback history | 4 | Scoped history index followed by sort | 0.035 |
+
+No extra graph, lineage or feedback indexes were needed for this fixture. Candidate selection still inspects JSON account and retention rows, and history reads grow with the number of entries in a case. Verify those costs against larger per-case histories during performance acceptance.

@@ -86,9 +86,7 @@ def snapshot(db, case):
 
 
 def restore_history(db, staging, case, *, for_write=False, cutoff=None):
-    selected = (
-        ("review", "feedback", "response", "audit") if for_write else ("feedback", "response")
-    )
+    selected = ("review", "feedback", "response") if for_write else ("feedback", "response")
     for kind, ordinal, recorded_at, entry in db.execute(
         """SELECT kind, ordinal, recorded_at, entry FROM riswan_data.case_memory_history
         WHERE investigation_id = %s AND kind = ANY(%s)
@@ -117,17 +115,21 @@ def append_history(db, context, staging, case, before):
             latest += 1
             entry = [latest, *row[1:]]
             when = row[5] if kind == "review" else row[3] if kind == "audit" else row[2]
-            db.execute(
-                "INSERT INTO riswan_data.case_memory_history VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
-                (
-                    context.tenant_id,
-                    context.product_id,
-                    case,
-                    uuid4(),
-                    context.actor_id,
-                    kind,
-                    latest,
-                    time_key(when),
-                    canonical_json(entry),
-                ),
-            )
+            insert_entry(db, context, case, kind, entry, when)
+
+
+def insert_entry(db, context, case, kind, entry, when):
+    db.execute(
+        "INSERT INTO riswan_data.case_memory_history VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+        (
+            context.tenant_id,
+            context.product_id,
+            case,
+            uuid4(),
+            context.actor_id,
+            kind,
+            entry[0],
+            time_key(when),
+            canonical_json(entry),
+        ),
+    )

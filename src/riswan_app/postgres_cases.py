@@ -165,6 +165,10 @@ class PostgresCases(CaseReader):
                 ]
                 for table, query in ARTIFACT_QUERIES.items()
             }
+            index_audit = [
+                list(row)
+                for row in staging.execute("SELECT * FROM memory_audit WHERE case_id = ?", (case,))
+            ]
         security_data = {name: captured.pop(name) for name in postgres_security_data.ARTIFACTS}
         graph = captured.pop("security_graphs")[0]["snapshot"]
         temporal = captured.pop("temporal_correlations")[0]["snapshot"]
@@ -199,6 +203,8 @@ class PostgresCases(CaseReader):
         postgres_graphs.append(db, context, case, graph)
         postgres_intelligence.append(db, context, case, temporal, risk)
         postgres_intelligence.save_memory(db, context, case, memory)
+        for entry in index_audit:
+            postgres_memory.insert_entry(db, context, case, "audit", entry, entry[3])
         return report
 
     @staticmethod
@@ -674,7 +680,15 @@ class PostgresCases(CaseReader):
     def memory_feedback(self, case: str, feedback: Feedback | AnalystFeedback) -> None:
         with self._scope.transaction() as (db, context), self._compiler.connect() as staging:
             self._lock_case(db, case)
-            postgres_memory.snapshot(db, case)
+            if not isinstance(feedback, AnalystFeedback):
+                postgres_memory.snapshot(db, case)
+            removed = (
+                db.execute(
+                    "SELECT 1 FROM riswan_data.investigation_memory_removals WHERE investigation_id = %s",
+                    (case,),
+                ).fetchone()
+                is not None
+            )
             report, artifacts = self._bundle(db, case)
             self._compiler.seed_transient_parent(staging, report)
             self._restore(staging, artifacts)
@@ -693,7 +707,8 @@ class PostgresCases(CaseReader):
                 )
                 verification = evidence_store.verify(staging, case, report)
                 if (
-                    verification.valid
+                    not removed
+                    and verification.valid
                     and verification.custody_checked
                     and not verification.expired_raw
                 ):

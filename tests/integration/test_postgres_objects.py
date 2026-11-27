@@ -519,6 +519,14 @@ def test_hosted_postgres_case_preview(
         send(child_path + "/risk/reassess", "POST", tenant=b, cookie=bob, payload=child_request)[0]
         == 404
     )
+    from riswan_ir.risk.models import Reassessment
+    from riswan_platform.core.exceptions import NotFoundError
+
+    with bind_context(PlatformContext(UUID(a), str(uuid4()), "human", "ir", "req", "corr")):
+        with pytest.raises(NotFoundError, match="Reassessment unavailable"):
+            hosted.store.reassess(
+                risk_revision["id"], Reassessment.model_validate(child_request), parent=case
+            )
     status, reassessed = send(
         child_path + "/risk/reassess", "POST", tenant=a, payload=child_request
     )
@@ -579,6 +587,24 @@ def test_hosted_postgres_case_preview(
         tenant=a,
         payload={"classification": "authorized_activity", "evidence_references": [reference]},
     ) == (201, {"recorded": True})
+    assert send(
+        memory_path + "/feedback",
+        "POST",
+        tenant=a,
+        payload={"classification": "authorized_activity", "evidence_references": [reference]},
+    ) == (201, {"recorded": True})
+    with postgres_pool.connection() as db, db.transaction():
+        assert db.execute("SELECT count(*) FROM riswan_data.case_memory_history").fetchone() == (0,)
+        for tenant_id, product, count in ((a, "other", 0), (b, "ir", 0), (a, "ir", 2)):
+            db.execute(
+                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', %s, true)",
+                (tenant_id, product),
+            )
+            assert db.execute(
+                """SELECT count(*) FROM riswan_data.case_memory_history
+                WHERE investigation_id = %s AND kind = 'feedback'""",
+                (assessed_case["id"],),
+            ).fetchone() == (count,)
     status, past = send(current_memory, tenant=a, query=cutoff)
     assert status == 200
     assert not any(
@@ -934,7 +960,16 @@ def test_hosted_postgres_temporal_late_event_and_duplicate_revision(hosted_postg
     retry_path = f"/v1/investigations/{retry['id']}"
     status, replay = send(retry_path + "/temporal-correlation/replay", tenant=tenant)
     assert status == 200
-    assert replay["incidents"] == [incident]
+    (replayed,) = replay["incidents"]
+    assert replayed["incident_id"] == incident["incident_id"]
+    assert replayed["version"] == incident["version"]
+    assert [(row["event_id"], row["ingested_at"]) for row in replayed["timeline"]] == [
+        (row["event_id"], row["ingested_at"]) for row in incident["timeline"]
+    ]
+    _, retry_evidence = send(retry_path + "/evidence", tenant=tenant)
+    references = {row["reference"]["evidence_id"] for row in retry_evidence}
+    assert {row["evidence_id"] for row in replayed["timeline"]} == references
+    assert all(set(row["relationship_evidence_ids"]) <= references for row in replayed["timeline"])
     selected = urlencode(
         [("version", rule["id"] + "=" + rule["version"]) for rule in replay["rules"]]
     )
