@@ -54,7 +54,7 @@ class RegisteredCredentialBroker:
                     raise AccessDenied
                 registered, provider = self._authorized(integration_id, purpose, context)
                 if not self._service.repository.initializes_sqlite_schema:
-                    self._persist_binding(registered)
+                    self._persist_binding(registered, context)
                 if preflight is not None:
                     preflight()
                 try:
@@ -148,7 +148,7 @@ class RegisteredCredentialBroker:
                 repository.bind_secret_product(context.product_id)
                 registered, _ = self._authorized(integration_id, purpose, context)
                 if enroll:
-                    self._persist_binding(registered)
+                    self._persist_binding(registered, context)
                 else:
                     self._verify_binding(registered)
                 yield
@@ -163,11 +163,13 @@ class RegisteredCredentialBroker:
             registered.membership_joined,
         )
 
-    def _persist_binding(self, registered: CredentialRegistration) -> None:
+    def _persist_binding(
+        self, registered: CredentialRegistration, context: PlatformContext
+    ) -> None:
         scope = self._scope(registered)
         instance = str(registered.instance_id)
         payload = registered.request.model_dump_json()
-        with self._service.repository._connection() as db:
+        with self._service.repository.atomic() as db:
             self._service._persist_provider(
                 db,
                 scope[0],
@@ -175,13 +177,24 @@ class RegisteredCredentialBroker:
                 registered.instance_id,
                 registered.request.resource.namespace.model_dump_json(),
             )
-            db.execute(
+            inserted = db.execute(
                 """INSERT INTO credential_bindings
                 (tenant_id, product, integration_id, workload_id, membership_joined, instance_id, request)
                 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
                 (*scope, instance, payload),
-            )
-        self._verify_binding(registered)
+            ).rowcount
+            self._verify_binding(registered)
+            if inserted:
+                self._service._audit(
+                    context,
+                    registered.request.integration_id,
+                    "credential.binding.created",
+                    "success",
+                    "WORKLOAD_BOUND",
+                    provider_instance_id=registered.instance_id,
+                    integration_id=registered.request.integration_id,
+                    target_cloud=registered.request.resource.namespace.cloud,
+                )
 
     def _verify_binding(self, registered: CredentialRegistration) -> None:
         scope = self._scope(registered)

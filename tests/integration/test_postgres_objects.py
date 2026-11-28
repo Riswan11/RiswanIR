@@ -2179,6 +2179,7 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "interrupted",
         "outage",
         "outage_before",
+        "registration_rollback",
         "ambiguous",
         "expired",
         "ordered_disable",
@@ -2401,10 +2402,17 @@ def test_authenticated_postgres_collection_handoff(
             raise psycopg.OperationalError("fixture reply lost after commit")
         return result
 
+    def fail_registration(*args):
+        raise psycopg.OperationalError("fixture storage failure after registration audit")
+
     with monkeypatch.context() as run_patches:
         try:
             if outcome == "outage_before":
                 run_patches.setattr(postgres_pool, "connection", offline)
+            if outcome == "registration_rollback":
+                run_patches.setattr(
+                    collection._repository, "_verify_registration", fail_registration
+                )
             if outcome in {"ambiguous", "ordered_disable"}:
                 run_patches.setattr(collection._repository, "_publish", publish_with_fault)
             if outcome == "write_failure":
@@ -2426,6 +2434,7 @@ def test_authenticated_postgres_collection_handoff(
                         "cycle",
                         "outage",
                         "outage_before",
+                        "registration_rollback",
                         "ambiguous",
                         "expired",
                         "write_failure",
@@ -2465,12 +2474,20 @@ def test_authenticated_postgres_collection_handoff(
             assert registration[:4] == (actor, entry.instance_id, request_id, correlation)
             assert credential_canary not in registration[4]
             assert request_id and correlation == request_id
-            assert admin.execute(
-                """SELECT count(*) FROM riswan_control.secret_access_events
-                WHERE tenant_id = %s AND event::jsonb->>'request_id' = %s
-                AND event::jsonb->>'correlation_id' = %s AND event::jsonb->>'action' = 'credential.lease.issued'""",
-                (tenant, request_id, correlation),
-            ).fetchone() == (1,)
+            related = admin.execute(
+                """SELECT event::jsonb->>'action', event::jsonb->>'actor_id', event
+                FROM riswan_control.secret_access_events
+                WHERE tenant_id = %s AND product = 'ir' AND secret_id = %s
+                AND event::jsonb->>'request_id' = %s AND event::jsonb->>'correlation_id' = %s
+                AND event::jsonb->>'action' IN ('credential.binding.created', 'credential.lease.issued')
+                ORDER BY sequence""",
+                (tenant, str(entry.integration_id), request_id, correlation),
+            ).fetchall()
+            assert [row[:2] for row in related] == [
+                ("credential.binding.created", workload),
+                ("credential.lease.issued", workload),
+            ]
+            assert all(credential_canary not in row[2] for row in related)
         assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
             "valid"
         ]
@@ -2489,12 +2506,38 @@ def test_authenticated_postgres_collection_handoff(
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    if outcome == "registration_rollback":
+        assert not leases
+        client.lookup_events.assert_not_called()
+        with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as admin:
+            scope = (UUID(tenant), entry.integration_id)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_data.collection_registration_audit
+                WHERE tenant_id = %s AND integration_id = %s""",
+                scope,
+            ).fetchone() == (0,)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_data.collection_integrations
+                WHERE tenant_id = %s AND integration_id = %s""",
+                scope,
+            ).fetchone() == (0,)
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+        with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as admin:
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_data.collection_registration_audit
+                WHERE tenant_id = %s AND integration_id = %s""",
+                scope,
+            ).fetchone() == (1,)
     assert not list(tmp_path.glob("*.sqlite3"))
 
 
 def test_postgres_tenant_audit_requires_current_scoped_permission(
     hosted_postgres, postgres_control_pool, record_property, monkeypatch
 ):
+    from urllib.parse import urlencode
+
     import psycopg
 
     _, send, _, bob, tenant, other = hosted_postgres
@@ -2515,6 +2558,18 @@ def test_postgres_tenant_audit_requires_current_scoped_permission(
         "platform.tenancy.organization_created"
     )
     assert send(route, query="request_id=" + first["request_id"])[1]["events"] == [first]
+    filters = {
+        "actor_id": first["actor_id"],
+        "operation": first["event"],
+        "start": first["occurred_at"],
+    }
+    if first["target"] is not None:
+        filters["resource"] = first["target"]
+    assert send(route, query=urlencode(filters))[1]["events"] == [first]
+    assert send(route, query=urlencode({"end": first["occurred_at"]}))[1]["events"]
+    assert send(route, query=urlencode({"actor_id": str(uuid4()), "before": first["id"]}))[0] == 404
+    assert send(route, query="start=2026-01-01")[0] == 400
+    assert send(route, query="operation=malformed%27")[0] == 400
     assert send(route, query="limit=0")[0] == 400
     assert send(route, query="limit=1&limit=2")[0] == 400
     assert send(route, cookie=bob)[0] == 404
@@ -2552,6 +2607,18 @@ def test_postgres_tenant_audit_requires_current_scoped_permission(
         status, error = send(route)
         assert status == 404
         assert "events" not in error
+    from psycopg_pool import PoolClosed
+
+    def offline(*args, **kwargs):
+        raise PoolClosed("fixture")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(postgres_control_pool, "connection", offline)
+        status, error = send(route)
+        assert status == 503
+        assert "events" not in error
+    assert send(route)[0] == 200
+
     with postgres_control_pool.connection() as db, db.transaction():
         assert db.execute(
             "SELECT count(*) FROM riswan_control.organization_audit_events"

@@ -24,3 +24,18 @@ The tenant timeline currently covers organization events and request filtering. 
 ## Tenant timeline query plan
 
 A disposable CI fixture added 256 tenant records and queried through the restricted control role with matching control and audit-read scope. PostgreSQL used a bitmap index scan on `organization_audit_timeline`, a bitmap heap scan, and a top-N sort on `occurred_at DESC, id DESC`. The scoped scan produced 260 rows and the limit returned 25. The index supports tenant filtering and the chronological key used by pagination. This run used PostgreSQL's default planner settings and is evidence for this fixture only.
+
+## Control and product registration sequence
+
+The hosted route authorizes enrollment and stages provider and workload bindings in the control transaction. The binding insert and its structured security event share a savepoint. The product connection inserts the registration and its trigger-generated event, then commits independently. Control authorization remains locked through registration and window reservation. If the control commit fails after registration, the durable registration event still represents a product commit. Subsequent attempts verify the exact persisted registration and current enrollment before credential issuance and revalidate ownership before publishing.
+
+The tenant API applies actor, resource, operation, UTC time bounds and request filters only inside the authorized tenant. The cursor record must exist within the selected tenant and match the supplied predicates. Secret resource audit already uses the separate SECRET_AUDIT permission and a product-scoped transaction. The tenant timeline has no read path into pre-tenant authentication history.
+
+| Additional audit distinction | Authoritative storage and access |
+| --- | --- |
+| Membership, invitations and workload roster enrollment/revocation | Tenant control writes and audit use the organization transaction. Actor, target and request ID are captured. Tokens are excluded from the timeline. |
+| Workload identity status changes | Identity status history records the platform actor and status. Identity runtime appends and tenant administrators have no read entitlement. |
+| Credential binding creation | Control secret access events record trusted workload, integration, provider identifier, operation, outcome, request and correlation. The binding and event commit together. Registry and connector inputs are excluded. |
+| Secret provider binding | Existing secret bind operations use the scoped secret lifecycle contract and audit records. Runtime scope requires tenant and product, and secret retrieval uses SECRET_AUDIT. |
+| Collection configuration and enablement | Initial configuration is persisted with registration. The runtime has no administrative configuration, enablement or removal API for this preview. Privileged direct database enablement changes are outside the application audit role. |
+| Collection attempts and outcomes | Collection runs retain bounded counts, status and correlation. They are publication receipts. Workload credentials have a separate audit authority. |
