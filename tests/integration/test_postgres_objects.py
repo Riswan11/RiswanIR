@@ -37,7 +37,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 19)]
+        ).fetchall() == [(version,) for version in range(1, 20)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -2456,6 +2456,14 @@ def test_authenticated_postgres_collection_handoff(
                 (UUID(tenant), entry.integration_id),
             ).fetchone()
             assert str(actor) == workload
+            registration = admin.execute(
+                """SELECT workload_id, provider_instance_id, request_id, correlation_id, to_jsonb(a)::text
+                FROM riswan_data.collection_registration_audit a
+                WHERE tenant_id = %s AND product_id = 'ir' AND integration_id = %s""",
+                (UUID(tenant), entry.integration_id),
+            ).fetchone()
+            assert registration[:4] == (actor, entry.instance_id, request_id, correlation)
+            assert credential_canary not in registration[4]
             assert request_id and correlation == request_id
             assert admin.execute(
                 """SELECT count(*) FROM riswan_control.secret_access_events

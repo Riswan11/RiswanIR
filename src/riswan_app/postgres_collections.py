@@ -24,6 +24,7 @@ TABLES = (
     "collection_progress",
     "collection_observations",
     "collection_runs",
+    "collection_registration_audit",
 )
 
 

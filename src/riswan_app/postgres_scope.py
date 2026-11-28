@@ -28,6 +28,7 @@ MIGRATIONS = (
     "0016_collection.sql",
     "0017_audit_integration.sql",
     "0018_protected_object_audit.sql",
+    "0019_collection_registration_audit.sql",
 )
 
 
