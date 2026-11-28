@@ -3,6 +3,7 @@
 import logging
 import re
 import sqlite3
+from urllib.parse import parse_qsl
 from uuid import UUID
 
 from riswan_ir.api.http import Application
@@ -20,6 +21,7 @@ from riswan_platform.tenancy import (
 
 from .hosted_collection import CollectionAPI
 from .hosted_product import HostedPostgresCases, HostedProduct
+from .postgres_audit import tenant_timeline
 from .secret_api import BASE as SECRETS_BASE
 from .secret_api import SecretAPI
 from .tenancy import Tenancy
@@ -145,6 +147,31 @@ class TenantAPI:
             return 200, self.tenancy.lifecycle(
                 principal, organization_id, change.status, request_id
             ).model_dump(mode="json")
+        if method == "GET" and suffix == "/audit":
+            query = env.get("QUERY_STRING", "")
+            if len(query) > 512:
+                raise ValueError("Invalid audit filter.")
+            pairs = parse_qsl(query, strict_parsing=True, max_num_fields=3, keep_blank_values=True)
+            options = dict(pairs)
+            if len(pairs) != len(options) or options.keys() - {"before", "limit", "request_id"}:
+                raise ValueError("Invalid audit filter.")
+            limit = int(options.get("limit", "25"))
+            request_filter = options.get("request_id")
+            if not 1 <= limit <= 100 or (
+                request_filter is not None
+                and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request_filter)
+            ):
+                raise ValueError("Invalid audit filter.")
+            before = UUID(options["before"]) if "before" in options else None
+            return 200, tenant_timeline(
+                self.tenancy,
+                principal,
+                organization_id,
+                request_id,
+                before=before,
+                limit=limit,
+                request_filter=request_filter,
+            )
         if method == "GET" and suffix == "/members":
             return 200, [
                 item.model_dump(mode="json")

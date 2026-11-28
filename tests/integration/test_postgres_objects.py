@@ -31,13 +31,13 @@ def postgres_pool():
 
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         with pytest.MonkeyPatch.context() as patches:
-            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:15])
+            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:16])
             migrate(owner)
         migrate(owner)
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 17)]
+        ).fetchall() == [(version,) for version in range(1, 18)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -2118,10 +2118,17 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
             )
             db.execute(
                 """INSERT INTO riswan_data.collection_runs
-                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted)
-                SELECT %s,%s,%s,%s,gen_random_uuid(),%s,%s,%s,0,0
+                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted,request_id,correlation_id)
+                SELECT %s,%s,%s,%s,gen_random_uuid(),%s,%s,%s,0,0,%s,%s
                 FROM generate_series(1,256)""",
-                (*scope, workload, first.start, first.end),
+                (
+                    *scope,
+                    workload,
+                    first.start,
+                    first.end,
+                    context.request_id,
+                    context.correlation_id,
+                ),
             )
             for name, query, params in (
                 (
@@ -2442,6 +2449,20 @@ def test_authenticated_postgres_collection_handoff(
         assert not leases
         client.lookup_events.assert_not_called()
     if outcome == "success":
+        with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+            (actor, request_id, correlation) = admin.execute(
+                """SELECT actor_id, request_id, correlation_id FROM riswan_data.collection_runs
+                WHERE tenant_id = %s AND integration_id = %s""",
+                (UUID(tenant), entry.integration_id),
+            ).fetchone()
+            assert str(actor) == workload
+            assert request_id and correlation == request_id
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_control.secret_access_events
+                WHERE tenant_id = %s AND event::jsonb->>'request_id' = %s
+                AND event::jsonb->>'correlation_id' = %s AND event::jsonb->>'action' = 'credential.lease.issued'""",
+                (tenant, request_id, correlation),
+            ).fetchone() == (1,)
         assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
             "valid"
         ]
@@ -2461,3 +2482,84 @@ def test_authenticated_postgres_collection_handoff(
         assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
     assert not list(tmp_path.glob("*.sqlite3"))
+
+
+def test_postgres_tenant_audit_requires_current_scoped_permission(
+    hosted_postgres, postgres_control_pool, record_property
+):
+    import psycopg
+
+    _, send, _, bob, tenant, other = hosted_postgres
+    _, own = send("/v1/organizations")
+    org = next(item for item in own if item["tenant_id"] == tenant)
+    _, foreign = send("/v1/organizations", cookie=bob)
+    foreign_org = next(item for item in foreign if item["tenant_id"] == other)
+    path = f"/v1/organizations/{org['id']}"
+    foreign_path = f"/v1/organizations/{foreign_org['id']}/audit"
+    route = path + "/audit"
+    assert send(path, "PUT", payload={"name": "Renamed fixture"})[0] == 200
+    status, page = send(route, query="limit=1")
+    assert status == 200
+    (first,) = page["events"]
+    assert first["event"] == "platform.tenancy.organization_updated"
+    assert page["next_before"] == first["id"]
+    assert send(route, query="before=" + page["next_before"])[1]["events"][0]["event"] == (
+        "platform.tenancy.organization_created"
+    )
+    assert send(route, query="request_id=" + first["request_id"])[1]["events"] == [first]
+    assert send(route, query="limit=0")[0] == 400
+    assert send(route, query="limit=1&limit=2")[0] == 400
+    assert send(route, cookie=bob)[0] == 404
+    assert send(foreign_path, query="before=" + first["id"], cookie=bob)[0] == 404
+    _, identity = send("/v1/identity/me", cookie=bob)
+    _, invitation = send(
+        path + "/invitations",
+        "POST",
+        payload={"role": "analyst", "identity_id": identity["identity_id"]},
+    )
+    assert (
+        send(
+            "/v1/organizations/invitations/accept",
+            "POST",
+            cookie=bob,
+            payload={"token": invitation["token"]},
+        )[0]
+        == 200
+    )
+    assert send(route, cookie=bob)[0] == 404
+    assert invitation["token"] not in json.dumps(send(route)[1])
+    with postgres_control_pool.connection() as db, db.transaction():
+        assert db.execute(
+            "SELECT count(*) FROM riswan_control.organization_audit_events"
+        ).fetchone() == (0,)
+        for statement in (
+            "DELETE FROM riswan_control.organization_audit_events",
+            "UPDATE riswan_control.organization_audit_events SET request_id = 'forged'",
+            "SELECT * FROM riswan_auth.authentication_events",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute(statement)
+    with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as db:
+        with db.transaction(force_rollback=True):
+            db.execute(
+                """INSERT INTO riswan_control.organization_audit_events
+                SELECT gen_random_uuid()::text, tenant_id, actor_id, event, target, occurred_at, request_id
+                FROM riswan_control.organization_audit_events CROSS JOIN generate_series(1, 256)
+                WHERE id = %s""",
+                (first["id"],),
+            )
+            db.execute("SET LOCAL ROLE riswan_control_runtime")
+            db.execute(
+                """SELECT set_config('riswan.control_actor', %s, true),
+                          set_config('riswan.control_tenant', %s, true),
+                          set_config('riswan.audit_read_tenant', %s, true)""",
+                (first["actor_id"], tenant, tenant),
+            )
+            plan = db.execute(
+                """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+                SELECT id FROM riswan_control.organization_audit_events WHERE tenant_id=%s
+                ORDER BY occurred_at DESC, id DESC LIMIT 25""",
+                (tenant,),
+            ).fetchone()[0][0]
+            assert plan["Plan"]["Actual Rows"] == 25
+            record_property("tenant_audit_query_plan", json.dumps(plan))
