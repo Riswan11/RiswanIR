@@ -16,10 +16,16 @@ from riswan_platform.identity.service import IdentityService
 
 from .authorization_repository import AuthorizationRepository
 from .cloud_storage_config import load_secret_routing
-from .hosted_collection import CollectionAPI, load_collections
+from .hosted_collection import (
+    CollectionAPI,
+    PostgresCollectionAPI,
+    PreviewCollection,
+    load_collections,
+)
 from .hosted_product import HostedPostgresCases, HostedProduct
 from .identity_repository import SQLiteIdentityRepository
 from .postgres_cases import PostgresCases
+from .postgres_collections import PostgresCollections
 from .postgres_control import PostgresAuthorizationRepository
 from .postgres_identity import PostgresIdentityRepository
 from .secret_api import SecretAPI
@@ -39,6 +45,7 @@ def compose_identity(
     postgres_case_pool: Any = None,
     enable_postgres_preview: bool = False,
     preview_secret_routing: SecretRouting | None = None,
+    preview_collections: tuple[PreviewCollection, ...] = (),
     postgres_identity_pool: Any = None,
     postgres_control_pool: Any = None,
     hosted_db: Path | None = None,
@@ -59,6 +66,8 @@ def compose_identity(
         raise ValueError(
             "PostgreSQL preview requires explicit development opt-in without providers."
         )
+    if preview_collections and (postgres_control_pool is None or postgres_case_pool is None):
+        raise ValueError("Preview collection requires PostgreSQL product and control storage.")
     if preview_secret_routing is not None and postgres_control_pool is None:
         raise ValueError("Preview secret routing requires PostgreSQL control storage.")
     if postgres_control_pool is not None and (
@@ -130,6 +139,9 @@ def compose_identity(
             authorization,
             identities.is_active_human,
             identities.is_active_workload,
+            identities.workload_guard
+            if isinstance(identities, PostgresIdentityRepository)
+            else None,
         )
         fallback = None
         if secrets_region and secrets_kms_key:
@@ -148,18 +160,26 @@ def compose_identity(
         routing = load_secret_routing(secrets_providers) if secrets_providers else None
         hosted: HostedProduct | HostedPostgresCases
         local_store = None
+        cases = None
         if postgres_case_pool is not None:
-            hosted = HostedPostgresCases(tenancy, PostgresCases(postgres_case_pool))
+            cases = PostgresCases(postgres_case_pool)
+            hosted = HostedPostgresCases(tenancy, cases)
         else:
             if hosted_db is None:
                 raise ValueError("Hosted product storage unavailable.")
             local_store = Store(hosted_db, hosted=True)
             hosted = HostedProduct(tenancy, local_store)
         secret_routes = None
-        collections = None
+        collections: CollectionAPI | None = None
         if preview_secret_routing is not None:
             secret_routes = SecretAPI(
                 Secrets(tenancy, None, environment="development", routing=preview_secret_routing)
+            )
+        if preview_collections and cases is not None:
+            collections = PostgresCollectionAPI(
+                Secrets(tenancy, None, environment="development", routing=preview_secret_routing),
+                PostgresCollections(cases, postgres_case_pool),
+                preview_collections,
             )
         if control_db is not None:
             service = Secrets(tenancy, fallback, environment="production", routing=routing)

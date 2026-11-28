@@ -34,10 +34,16 @@ LAST_REGIONAL_CALL: dict[tuple[str, str], float] = {}
 
 
 class RequestBudget:
-    def __init__(self, limit: int, pause: Callable[[float], None] = time.sleep) -> None:
+    def __init__(
+        self,
+        limit: int,
+        pause: Callable[[float], None] = time.sleep,
+        check: Callable[[], None] | None = None,
+    ) -> None:
         self.limit = limit
         self.pause = pause
         self.used = 0
+        self.check = check
 
     def call(
         self,
@@ -54,9 +60,14 @@ class RequestBudget:
                 if previous is not None:
                     self.pause(max(0, 0.51 - (time.monotonic() - previous)))
                 LAST_REGIONAL_CALL[regional_limit] = time.monotonic()
+            if self.check is not None:
+                self.check()
             self.used += 1
             try:
-                return invoke()
+                result = invoke()
+                if self.check is not None:
+                    self.check()
+                return result
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code")
                 status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)

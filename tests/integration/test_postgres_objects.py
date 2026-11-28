@@ -31,13 +31,13 @@ def postgres_pool():
 
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         with pytest.MonkeyPatch.context() as patches:
-            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:14])
+            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:15])
             migrate(owner)
         migrate(owner)
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 16)]
+        ).fetchall() == [(version,) for version in range(1, 17)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -1966,3 +1966,498 @@ def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkey
             preview_secret_routing=routing,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_postgres_collection_checkpoint_and_evidence_commit_together(
+    hosted_postgres, postgres_pool, cloudtrail, monkeypatch, record_property
+):
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    from riswan_app.hosted_collection import CollectionRegistration
+    from riswan_app.postgres_collections import PostgresCollections
+    from riswan_ir.connectors.base import CollectedBatch, CollectionFailure
+    from riswan_ir.models.collection import CollectionRequest
+
+    app, send, _, _, tenant, other = hosted_postgres
+    collection = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
+    source = cloudtrail["Records"][0]
+    principal = source["userIdentity"]["arn"]
+    account = principal.split(":")[4]
+    workload = uuid4()
+    now = datetime.now(UTC)
+    entry = CollectionRegistration.model_validate(
+        {
+            "integration_id": uuid4(),
+            "instance_id": uuid4(),
+            "tenant_id": tenant,
+            "workload_id": workload,
+            "membership_joined": now,
+            "namespace": {
+                "cloud": "aws",
+                "partition": "aws",
+                "account": account,
+                "region": "us-east-1",
+            },
+            "connector": {
+                "kind": "cloudtrail",
+                "principal": principal,
+                "account": {
+                    "account_id": account,
+                    "region": "us-east-1",
+                    "role_arn": f"arn:aws:iam::{account}:role/Synthetic",
+                    "external_id": "synthetic-registration-only",
+                },
+            },
+        }
+    )
+    first = CollectionRequest(start=now - timedelta(minutes=15), end=now)
+    second = CollectionRequest(start=first.start, end=now + timedelta(minutes=1))
+    context = PlatformContext(
+        UUID(tenant), str(workload), "service", "ir", "request", "correlation"
+    )
+    batch = CollectedBatch("fixture/location", [source, source])
+    connector = Mock()
+    connector.collect.side_effect = lambda _: iter([batch])
+
+    def partial(_):
+        yield batch
+        raise TimeoutError("synthetic provider detail")
+
+    with bind_context(context):
+        with pytest.raises(CollectionFailure, match="registration_conflict"):
+            collection.confirm_registration(entry)
+    with bind_context(context):
+        assert collection.register(entry) is None
+        advance = collection._advance
+
+        def fail_after_checkpoint(*args):
+            advance(*args)
+            raise RuntimeError("injected checkpoint failure")
+
+        with monkeypatch.context() as patches:
+            patches.setattr(collection, "_advance", fail_after_checkpoint)
+            with pytest.raises(RuntimeError, match="injected checkpoint failure"):
+                collection.collect_and_publish(entry, first, None, connector)
+        assert collection.register(entry) is None
+        with monkeypatch.context() as patches:
+            patches.setattr(connector.collect, "side_effect", partial)
+            with pytest.raises(CollectionFailure, match="provider_failure"):
+                collection.collect_and_publish(entry, first, None, connector)
+        with collection._transaction(entry) as (db, _, _):
+            assert db.execute(
+                "SELECT healthy, watermark, failure_code FROM riswan_data.collection_progress"
+            ).fetchone() == (False, None, "provider_failure")
+    for denied in (
+        replace(context, tenant_id=UUID(other)),
+        replace(context, product_id="other"),
+        replace(context, actor_id=str(uuid4())),
+    ):
+        with bind_context(denied), pytest.raises(CollectionFailure, match="scope_denied"):
+            collection.register(entry)
+    assert send("/v1/investigations", tenant=tenant) == (200, [])
+
+    with bind_context(context):
+        assert collection.collect_and_publish(entry, first, None, connector)[1] == 1
+        with pytest.raises(CollectionFailure, match="stale_checkpoint"):
+            collection.collect_and_publish(entry, second, None, connector)
+        assert collection.collect_and_publish(entry, second, now, connector)[1] == 0
+        assert not collection.record_failure(entry, second, now, provider_failed=False)
+        future = CollectionRequest(start=second.end, end=second.end + timedelta(minutes=1))
+        with pytest.raises(CollectionFailure, match="invalid_checkpoint_window"):
+            collection.collect_and_publish(
+                entry,
+                future.model_copy(update={"incremental": False}),
+                second.end,
+                connector,
+            )
+        conflicting = Mock()
+        altered = {**source, "userAgent": "different content"}
+        conflicting.collect.return_value = iter([CollectedBatch(batch.location, [altered])])
+        with pytest.raises(CollectionFailure, match="conflicting_event"):
+            collection.collect_and_publish(entry, future, second.end, conflicting)
+        newest = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
+        assert newest.register(entry) == second.end
+        with newest._transaction(entry) as (db, _, _):
+            assert db.execute(
+                "SELECT count(*) FROM riswan_data.collection_observations"
+            ).fetchone() == (1,)
+            assert db.execute("SELECT count(*) FROM riswan_data.collection_runs").fetchone() == (3,)
+            assert "synthetic-registration-only" not in str(
+                db.execute("SELECT connector FROM riswan_data.collection_integrations").fetchall()
+            )
+    status, reports = send("/v1/investigations", tenant=tenant)
+    assert status == 200 and len(reports) == 1
+    report = reports[0]["id"]
+    assert send(f"/v1/investigations/{report}/evidence/verify", tenant=tenant)[1]["valid"]
+
+    def concurrent():
+        with bind_context(context):
+            try:
+                return collection.collect_and_publish(
+                    entry,
+                    CollectionRequest(start=now, end=second.end + timedelta(minutes=1)),
+                    second.end,
+                    connector,
+                )[1]
+            except CollectionFailure as exc:
+                return exc.error.code
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _: concurrent(), range(2)))
+    assert 0 in results and "stale_checkpoint" in results
+
+    with bind_context(context), collection._transaction(entry) as (db, _, scope):
+        with db.transaction(force_rollback=True):
+            db.execute(
+                """INSERT INTO riswan_data.collection_observations
+                SELECT %s,%s,%s,%s,'fixture-' || i,'fixture/location','fixture',%s
+                FROM generate_series(1,256) g(i)""",
+                (*scope, report),
+            )
+            db.execute(
+                """INSERT INTO riswan_data.collection_runs
+                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted)
+                SELECT %s,%s,%s,%s,gen_random_uuid(),%s,%s,%s,0,0
+                FROM generate_series(1,256)""",
+                (*scope, workload, first.start, first.end),
+            )
+            for name, query, params in (
+                (
+                    "collection_registration",
+                    """SELECT connector FROM riswan_data.collection_integrations
+                    WHERE (tenant_id,product_id,integration_id,source_scope)=(%s,%s,%s,%s)""",
+                    scope,
+                ),
+                (
+                    "collection_receipt",
+                    """SELECT digest FROM riswan_data.collection_observations
+                    WHERE (tenant_id,product_id,integration_id,source_scope,event_id)=(%s,%s,%s,%s,%s)""",
+                    (*scope, "fixture-128"),
+                ),
+                (
+                    "collection_progress",
+                    """SELECT watermark,healthy FROM riswan_data.collection_progress
+                    WHERE (tenant_id,product_id,integration_id,source_scope)=(%s,%s,%s,%s)""",
+                    scope,
+                ),
+                (
+                    "collection_history",
+                    """SELECT run_id FROM riswan_data.collection_runs
+                    WHERE (tenant_id,product_id,integration_id,source_scope)=(%s,%s,%s,%s)
+                    ORDER BY completed_at DESC LIMIT 100""",
+                    scope,
+                ),
+            ):
+                plan = db.execute(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, params
+                ).fetchone()[0][0]
+                assert plan["Plan"]["Actual Rows"] > 0
+                record_property(name + "_query_plan", json.dumps(plan))
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "timeout",
+        "cycle",
+        "revoked",
+        "suspended",
+        "reenrolled",
+        "disabled_identity",
+        "disabled_integration",
+        "provider_drift",
+        "interrupted",
+        "outage",
+        "outage_before",
+        "ambiguous",
+        "expired",
+        "ordered_disable",
+        "write_failure",
+        "event_budget",
+        "byte_budget",
+    ],
+)
+def test_authenticated_postgres_collection_handoff(
+    hosted_postgres,
+    postgres_pool,
+    postgres_identity_pool,
+    postgres_control_pool,
+    tmp_path,
+    cloudtrail,
+    monkeypatch,
+    caplog,
+    outcome,
+):
+    from datetime import UTC, datetime, timedelta
+    from threading import Event
+    from unittest.mock import Mock
+
+    import psycopg
+
+    from riswan_app.credential_broker import AWSSTS
+    from riswan_app.hosted_collection import CollectionRegistration, PreviewCollection
+    from riswan_app.identity_runtime import compose_identity
+    from riswan_ir.storage.sqlite import Store
+    from riswan_platform.identity.models import IdentityStatus
+    from riswan_platform.secrets import CredentialLease
+    from tests.integration.test_identity_runtime import call
+
+    original, send, alice, bob, tenant, other = hosted_postgres
+    _, organizations = send("/v1/organizations")
+    org = next(item for item in organizations if item["tenant_id"] == tenant)
+    org_path = f"/v1/organizations/{org['id']}"
+    _, _, identity = call(original, "/v1/identity/me", authorization="Bearer test-workload-token")
+    workload = identity["identity_id"]
+    worker = original.service.authenticate("fixture", bearer="test-workload-token")
+    enrollment = {"identity_id": workload}
+    assert send(org_path + "/workloads", "POST", payload=enrollment)[0] == 204
+    _, members = send(org_path + "/members")
+    joined = next(item["joined_at"] for item in members if item["identity_id"] == workload)
+
+    event = dict(cloudtrail["Records"][0])
+    principal = event["userIdentity"]["arn"]
+    account = principal.split(":")[4]
+    event.update(recipientAccountId=account, awsRegion="us-east-1")
+    credential_canary = "synthetic-temporary-collection-canary"
+    session = Mock()
+    leases = []
+    client = Mock()
+    session.client.return_value = client
+
+    class DevelopmentSTS(AWSSTS):
+        development_only = True
+
+        def session(self, config, now):
+            lease = CredentialLease(id=uuid4(), expires_at=now + timedelta(minutes=5))
+            leases.append(lease)
+            return session, lease
+
+    entry = CollectionRegistration.model_validate(
+        {
+            "integration_id": uuid4(),
+            "instance_id": uuid4(),
+            "tenant_id": tenant,
+            "workload_id": workload,
+            "membership_joined": joined,
+            "namespace": {
+                "cloud": "aws",
+                "partition": "aws",
+                "account": account,
+                "region": "us-east-1",
+            },
+            "connector": {
+                "kind": "cloudtrail",
+                "principal": principal,
+                "account": {
+                    "account_id": account,
+                    "region": "us-east-1",
+                    "role_arn": f"arn:aws:iam::{account}:role/Fixture",
+                    "external_id": credential_canary,
+                },
+            },
+        }
+    )
+
+    def compose():
+        return compose_identity(
+            tmp_path / "oidc.json",
+            None,
+            tmp_path / "workstation.sqlite3",
+            postgres_control_pool=postgres_control_pool,
+            postgres_case_pool=postgres_pool,
+            postgres_identity_pool=postgres_identity_pool,
+            enable_postgres_preview=True,
+            preview_collections=(PreviewCollection(entry, DevelopmentSTS()),),
+        )
+
+    app = compose()
+    route = f"/v1/integrations/{entry.integration_id}/collect"
+    collection = app._authenticated_routes.collections
+    repository = collection.service.repository
+    collected = {"Events": [{"CloudTrailEvent": json.dumps(event)}]}
+
+    def request(**headers):
+        return call(app, route, "POST", origin="https://app.example", **headers)
+
+    assert request(cookie=alice, tenant=tenant)[0] == 404
+    assert request(cookie=bob, tenant=other)[0] == 404
+    assert (
+        request(
+            authorization="Bearer test-workload-token",
+            tenant=tenant,
+            payload={"account_id": "000000000000"},
+        )[0]
+        == 404
+    )
+    client.lookup_events.assert_not_called()
+    monkeypatch.setattr(Store, "create", Mock(side_effect=AssertionError("legacy sink invoked")))
+
+    def page(**params):
+        assert repository._control.get() is None
+        # The product pool has one connection. Checkout succeeds only if no product transaction is held.
+        with postgres_pool.connection(timeout=1):
+            pass
+        if params.get("NextToken"):
+            if outcome == "timeout":
+                raise TimeoutError(credential_canary)
+            assert outcome == "cycle"
+            return {**collected, "NextToken": "fixture"}
+        if outcome in {"revoked", "suspended", "reenrolled"}:
+
+            def change():
+                if outcome == "suspended":
+                    return (
+                        send(org_path + "/lifecycle", "POST", payload={"status": "suspended"})[0]
+                        == 200
+                    )
+                revoked = send(org_path + f"/members/{workload}", "DELETE")[0] == 204
+                if outcome == "reenrolled":
+                    return (
+                        revoked
+                        and send(org_path + "/workloads", "POST", payload=enrollment)[0] == 204
+                    )
+                return revoked
+
+            with ThreadPoolExecutor(max_workers=1) as workers:
+                assert workers.submit(change).result(timeout=10)
+        if outcome == "event_budget":
+            return {"Events": collected["Events"] * 2001}
+        if outcome == "byte_budget":
+            oversized = {**event, "fixture_padding": "x" * 8_000_000}
+            return {"Events": [{"CloudTrailEvent": json.dumps(oversized)}]}
+        if outcome == "expired":
+            object.__setattr__(leases[-1], "expires_at", datetime.now(UTC) - timedelta(seconds=1))
+        if outcome == "disabled_identity":
+            original.service.set_status(worker.identity, IdentityStatus.DISABLED, "fixture")
+        if outcome in {"disabled_integration", "provider_drift"}:
+            with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+                if outcome == "disabled_integration":
+                    admin.execute(
+                        "UPDATE riswan_data.collection_integrations SET enabled=false WHERE integration_id=%s",
+                        (entry.integration_id,),
+                    )
+                else:
+                    admin.execute(
+                        "UPDATE riswan_control.secret_provider_bindings SET binding='{}' WHERE instance_id=%s",
+                        (str(entry.instance_id),),
+                    )
+        if outcome == "interrupted":
+            raise SystemExit()
+        if outcome == "outage":
+            from psycopg_pool import PoolClosed
+
+            def offline(*args, **kwargs):
+                raise PoolClosed("fixture")
+
+            run_patches.setattr(postgres_pool, "connection", offline)
+        if outcome in {"timeout", "cycle"}:
+            return {**collected, "NextToken": "fixture"}
+        return collected
+
+    monkeypatch.setattr("riswan_ir.connectors.aws.requests.LAST_REGIONAL_CALL", {})
+    client.lookup_events.side_effect = page
+
+    def offline(*args, **kwargs):
+        from psycopg_pool import PoolClosed
+
+        raise PoolClosed("fixture")
+
+    publish = collection._repository._publish
+    persist_batch = collection._repository._publish_batch
+
+    def fail_receipts(*args):
+        persist_batch(*args)
+        raise psycopg.OperationalError("fixture failure after receipt insertion")
+
+    disable_started = Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    disable_futures = []
+
+    def disable():
+        disable_started.set()
+        original.service.set_status(worker.identity, IdentityStatus.DISABLED, "fixture")
+
+    def publish_with_fault(*args):
+        if outcome == "ordered_disable":
+            disable_futures.append(executor.submit(disable))
+            assert disable_started.wait(timeout=5)
+            with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+                assert admin.execute("SELECT pg_try_advisory_xact_lock(947061)").fetchone() == (
+                    False,
+                )
+            assert not disable_futures[-1].done()
+        result = publish(*args)
+        if outcome == "ambiguous":
+            raise psycopg.OperationalError("fixture reply lost after commit")
+        return result
+
+    with monkeypatch.context() as run_patches:
+        try:
+            if outcome == "outage_before":
+                run_patches.setattr(postgres_pool, "connection", offline)
+            if outcome in {"ambiguous", "ordered_disable"}:
+                run_patches.setattr(collection._repository, "_publish", publish_with_fault)
+            if outcome == "write_failure":
+                run_patches.setattr(collection._repository, "_publish_batch", fail_receipts)
+            if outcome == "interrupted":
+                with pytest.raises(SystemExit):
+                    request(authorization="Bearer test-workload-token", tenant=tenant)
+            else:
+                status, _, response = request(
+                    authorization="Bearer test-workload-token", tenant=tenant
+                )
+                expected = (
+                    204
+                    if outcome in {"success", "ordered_disable"}
+                    else 503
+                    if outcome
+                    in {
+                        "timeout",
+                        "cycle",
+                        "outage",
+                        "outage_before",
+                        "ambiguous",
+                        "expired",
+                        "write_failure",
+                        "event_budget",
+                        "byte_budget",
+                    }
+                    else 404
+                )
+                assert status == expected
+                assert credential_canary not in json.dumps(response)
+        finally:
+            executor.shutdown(wait=True)
+            if outcome in {"disabled_identity", "ordered_disable"}:
+                original.service.set_status(worker.identity, IdentityStatus.ACTIVE, "fixture")
+    assert credential_canary not in caplog.text
+    if outcome == "suspended":
+        assert send(org_path + "/lifecycle", "POST", payload={"status": "active"})[0] == 200
+    reports = send("/v1/investigations", tenant=tenant)[1]
+    assert len(reports) == (1 if outcome in {"success", "ambiguous", "ordered_disable"} else 0)
+    if outcome == "outage_before":
+        assert not leases
+        client.lookup_events.assert_not_called()
+    if outcome == "success":
+        assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
+            "valid"
+        ]
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    if outcome == "ambiguous":
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    if outcome in {"interrupted", "outage", "timeout", "write_failure"}:
+        first_start = client.lookup_events.call_args_list[0].kwargs["StartTime"]
+        client.lookup_events.side_effect = None
+        client.lookup_events.return_value = collected
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    assert not list(tmp_path.glob("*.sqlite3"))

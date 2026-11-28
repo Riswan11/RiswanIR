@@ -11,7 +11,7 @@ A.6 adds a separately scoped platform identity repository to the PostgreSQL prev
 | Tenant lifecycle and memberships | Tenancy in tenancy.py. SQLite tenant_migrations, organizations, tenants, organization_memberships, organization_invitations and organization_audit_events. | List by verified actor, resolve active membership by actor and tenant, bootstrap a tenant and owner, accept by recipient and invitation digest, and enforce a single active owner. Membership, roles and lifecycle audit share the control transaction. | PostgreSQL with actor-scoped discovery, invitation acceptance and tenant-scoped mutations. |
 | Tenant and product secret metadata | Secrets in secrets.py. SQLite secret_metadata, secret_versions, secret_rotations, secret_consumer_policies and secret_access_events. | Resolve tenant and product before routing to a provider. Secret version, active pointer and retryable rotation operation updates rely on scoped transactions. Consumer policies bind work to active workload membership and purpose. Provider mutations are external to the database transaction. | SQLite metadata. Values stay in AWS, Azure or Google Cloud secret providers. The encrypted local provider belongs to workstation storage. |
 | Workload and integration credential control | RegisteredCredentialBroker and hosted credential broker. Provider and federation references come from trusted configuration. Workload membership and optional consumer policy reuse existing identity, tenancy and secret policy contracts. | Resolve the configured tenant, product, integration and workload before credential issuance. Audit uses the secret access event path. Lease values are transient and there is no existing SQLite lease table. | PostgreSQL workload identity lookup is available. Workload policy, binding and issuance audit persistence still depend on the control and integration ports. |
-| Tenant and product integration and collection state | Trusted provider, routing and connector configuration. SQLite collection_receipts, collection_checkpoints, collection_pending and collection_status in the IR product store. | Deduplicate receipts and reject conflicting event digests. Reserve a collection window, persist cases and receipts, advance checkpoint, and clear the matching reservation. Preserve status and idempotency across restart. | PostgreSQL preview currently rejects hosted collectors. The PostgreSQL collection port must share the sink transaction for cases, receipts and checkpoints. |
+| Tenant and product integration and collection state | Trusted provider, routing and connector configuration. SQLite collection_receipts, collection_checkpoints, collection_pending and collection_status in the IR product store. | Deduplicate receipts and reject conflicting event digests. Reserve a collection window, persist cases and receipts, advance checkpoint, and clear the matching reservation. Preserve status and idempotency across restart. | The gated PostgreSQL preview accepts trusted in-process registrations and development-only adapters. Cases, receipts and checkpoints share the product transaction. |
 | Tenant and case legal hold | Existing case repository and legal hold port. PostgreSQL investigation_legal_holds, investigation_hold_audit and investigation_memory_removals already use forced RLS. | Requires verified MFA and case authorization. Hold creation, release, attributed audit, and the memory removal check serialize on the case lock. | PostgreSQL reused. Revalidate when the tenancy and policy stores switch. |
 | Existing data protection controls | Provider key and storage bindings come from trusted configuration. The protected object adapter already has scoped PostgreSQL and workstation implementations. | Ownership binds the protected object context before provider access. Existing envelope format and managed-key checks are reused. | No general classification, retention, residency or deletion policy repository exists yet. Those policy controls belong to later checkpoints. |
 
@@ -111,3 +111,60 @@ revoke a credential already issued by a provider, and it cannot undo an
 external SDK action if the database transaction later fails. The broker returns
 only after its lease and audit transaction succeeds. Connector orchestration and
 production audit recovery are tracked in subsequent milestones.
+
+## A.6.4 hosted PostgreSQL collection
+
+| Existing storage | PostgreSQL foundation | Transaction and ownership |
+| --- | --- | --- |
+| Operator-provided hosted AWS registration and connector settings | collection_integrations | Scoped tenant, product and integration registration, with immutable workload, provider instance and connector source configuration. External IDs stay in trusted runtime configuration. |
+| SQLite collection_checkpoints, collection_pending and collection_status | collection_progress | Existing AWS time-window semantics. PostgreSQL locks the progress row and rejects publication when the expected watermark is stale. Opaque provider page tokens remain in the connector iterator. |
+| SQLite collection_receipts | collection_observations | Equal source event IDs from distinct locations retain distinct observations. Repeated pages deduplicate by location and event ID. Conflicting hashes abort publication. The case FK preserves tenant and product scope. |
+| SQLite connector status and reported run summary | collection_runs | A successful run commits with evidence, receipt and watermark writes. Failed runs may record a fixed failure code without moving the watermark, provided no newer run has advanced it. |
+
+Migration 0016 keeps these tables in the scoped product database so the
+existing case compiler, raw data, canonical events, provenance, custody,
+observations and checkpoint can commit together. The separate migration owner
+creates the tables. The restricted product runtime can read and append scoped
+records and update only progress. Every table forces tenant, product and
+integration RLS. The write path requires a matching trusted workload context.
+The authenticated development composition can inject operator-owned registrations
+and development-only STS adapters. No HTTP input can choose a role, namespace,
+provider instance or connector settings. CLI cloud configuration remains disabled
+for the PostgreSQL preview.
+
+The legacy AWS role adapter collects and writes SQLite while the credential
+transaction is open. The PostgreSQL route instead reserves the exact window,
+issues through RegisteredCredentialBroker, and captures the SDK session inside
+the trusted adapter callback. The lease and issuance audit commit before page
+reads start. Neither the control nor product connection remains checked out
+while pages are read. No provider values are persisted. A reservation survives
+failed reads or interruption, and clears with successful publication.
+
+The existing connector handles pagination and repeated tokens. The hosted budget
+allows at most 20 AWS requests, including retries. It checks a 120-second
+monotonic deadline and the lease before and after individual SDK calls.
+An in-flight call is bounded by existing SDK timeouts. The retained buffer
+holds at most 2,000 records and 8 MB. Pages and lease values are kept in memory.
+
+Publication acquires locks in control, identity, then product order. The final
+control check verifies the active tenant, exact enrollment and persisted
+credential/provider binding. The identity advisory lock is shared with workload
+disablement, including direct status updates under the identity database role. Inside the product transaction the integration advisory lock is
+shared with enablement changes. Authorization linearizes after these checks and
+the expected-watermark check, while all locks remain held through product commit.
+A revocation committed earlier denies publication. A later change waits until
+publication finishes. Privileged provider and credential binding edits also take
+the control lock before acquiring row locks. External credentials already issued
+remain valid according to provider rules.
+
+The sink verifies stored registration metadata before reading pages. It
+requires successful iterator exhaustion before publishing, with a 2,000-event
+and 8 MB retained-record cap. A partial read records a sanitized failure
+without committing observations or moving the watermark. Composite RLS
+policies inherit the parent registration's workload scope. These checks
+protect the internal persistence path once a trusted caller has established
+context. They do not perform live enrollment or provider authorization.
+
+The disposable plan fixture adds 256 observation and run rows. The CI JUnit
+artifact records scoped registration, receipt, progress and run-history plans.
+The test asserts returned rows without forcing PostgreSQL to select an index.

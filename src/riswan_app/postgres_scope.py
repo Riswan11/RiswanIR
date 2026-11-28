@@ -25,6 +25,7 @@ MIGRATIONS = (
     "0013_platform_identity.sql",
     "0014_platform_control.sql",
     "0015_secrets.sql",
+    "0016_collection.sql",
 )
 
 
@@ -84,7 +85,7 @@ class ScopedPostgres:
         context = require_context()
         with self._pool.connection() as db, db.transaction():
             db.execute(
-                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', %s, true)",
+                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', %s, true), set_config('riswan.collection_integration', '', true), set_config('riswan.collection_workload', '', true)",
                 (str(context.tenant_id), context.product_id),
             )
             yield db, context
