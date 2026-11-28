@@ -2176,6 +2176,8 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "expired",
         "ordered_disable",
         "write_failure",
+        "event_budget",
+        "byte_budget",
     ],
 )
 def test_authenticated_postgres_collection_handoff(
@@ -2321,6 +2323,11 @@ def test_authenticated_postgres_collection_handoff(
 
             with ThreadPoolExecutor(max_workers=1) as workers:
                 assert workers.submit(change).result(timeout=10)
+        if outcome == "event_budget":
+            return {"Events": collected["Events"] * 2001}
+        if outcome == "byte_budget":
+            oversized = {**event, "fixture_padding": "x" * 8_000_000}
+            return {"Events": [{"CloudTrailEvent": json.dumps(oversized)}]}
         if outcome == "expired":
             object.__setattr__(leases[-1], "expires_at", datetime.now(UTC) - timedelta(seconds=1))
         if outcome == "disabled_identity":
@@ -2415,6 +2422,8 @@ def test_authenticated_postgres_collection_handoff(
                         "ambiguous",
                         "expired",
                         "write_failure",
+                        "event_budget",
+                        "byte_budget",
                     }
                     else 404
                 )
