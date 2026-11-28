@@ -69,7 +69,10 @@ def _instant(value: str) -> datetime:
     instant = datetime.fromisoformat(value)
     if instant.tzinfo is None:
         raise ValueError("Audit time requires a UTC offset.")
-    return instant.astimezone(UTC)
+    try:
+        return instant.astimezone(UTC)
+    except OverflowError as exc:
+        raise ValueError("Audit time is outside the supported range.") from exc
 
 
 def tenant_timeline(

@@ -1695,7 +1695,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     service = app._authenticated_routes.secrets.service
     worker = app.service.authenticate("work", bearer="test-workload-token")
     request = CredentialRequest(
-        integration_id=uuid4(),
+        integration_id=UUID(key),
         resource=ExternalReference(namespace=namespace, native_id="fixture"),
         workload_id=workload,
         purpose="collect",
@@ -1763,6 +1763,10 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 broker.execute(request.integration_id, "collect")
             with pytest.raises(AccessDenied):
                 service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
+
+    status, resource_audit = send(secret + "/audit")
+    assert status == 200 and resource_audit
+    assert all(not item["action"].startswith("credential.") for item in resource_audit)
 
     from psycopg_pool import PoolClosed
 
@@ -2180,6 +2184,7 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "outage",
         "outage_before",
         "registration_rollback",
+        "binding_audit_outage",
         "ambiguous",
         "expired",
         "ordered_disable",
@@ -2405,10 +2410,20 @@ def test_authenticated_postgres_collection_handoff(
     def fail_registration(*args):
         raise psycopg.OperationalError("fixture storage failure after registration audit")
 
+    service = collection.service
+    audit = service._audit
+
+    def fail_binding_audit(context, key, action, *args, **kwargs):
+        if action == "credential.binding.created":
+            raise psycopg.OperationalError("fixture binding audit unavailable")
+        return audit(context, key, action, *args, **kwargs)
+
     with monkeypatch.context() as run_patches:
         try:
             if outcome == "outage_before":
                 run_patches.setattr(postgres_pool, "connection", offline)
+            if outcome == "binding_audit_outage":
+                run_patches.setattr(service, "_audit", fail_binding_audit)
             if outcome == "registration_rollback":
                 run_patches.setattr(
                     collection._repository, "_verify_registration", fail_registration
@@ -2435,6 +2450,7 @@ def test_authenticated_postgres_collection_handoff(
                         "outage",
                         "outage_before",
                         "registration_rollback",
+                        "binding_audit_outage",
                         "ambiguous",
                         "expired",
                         "write_failure",
@@ -2506,11 +2522,22 @@ def test_authenticated_postgres_collection_handoff(
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
-    if outcome == "registration_rollback":
+    if outcome in {"registration_rollback", "binding_audit_outage"}:
         assert not leases
         client.lookup_events.assert_not_called()
         with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as admin:
             scope = (UUID(tenant), entry.integration_id)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_control.credential_bindings
+                WHERE tenant_id = %s AND integration_id = %s""",
+                (tenant, str(entry.integration_id)),
+            ).fetchone() == (0,)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_control.secret_access_events
+                WHERE tenant_id = %s AND secret_id = %s
+                AND event::jsonb->>'action' = 'credential.binding.created'""",
+                (tenant, str(entry.integration_id)),
+            ).fetchone() == (0,)
             assert admin.execute(
                 """SELECT count(*) FROM riswan_data.collection_registration_audit
                 WHERE tenant_id = %s AND integration_id = %s""",
@@ -2569,6 +2596,7 @@ def test_postgres_tenant_audit_requires_current_scoped_permission(
     assert send(route, query=urlencode({"end": first["occurred_at"]}))[1]["events"]
     assert send(route, query=urlencode({"actor_id": str(uuid4()), "before": first["id"]}))[0] == 404
     assert send(route, query="start=2026-01-01")[0] == 400
+    assert send(route, query=urlencode({"start": "0001-01-01T00:00:00+01:00"}))[0] == 400
     assert send(route, query="operation=malformed%27")[0] == 400
     assert send(route, query="limit=0")[0] == 400
     assert send(route, query="limit=1&limit=2")[0] == 400
@@ -2699,3 +2727,34 @@ def test_protected_object_audit_is_atomic_and_metadata_only(postgres_pool):
         for operation in ("INSERT", "DELETE")
     ]
     assert all("never include" not in row[5] for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    [
+        (
+            "DELETE FROM riswan_data.schema_migrations WHERE version = 1",
+            "Unsupported PostgreSQL schema version.",
+        ),
+        (
+            "UPDATE riswan_data.schema_migrations SET checksum = 'fixture' WHERE version = 1",
+            "PostgreSQL migration checksum mismatch.",
+        ),
+    ],
+)
+def test_postgres_migration_rejects_invalid_history(postgres_pool, statement, message):
+    import psycopg
+
+    with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as db:
+        with db.transaction(force_rollback=True):
+            db.execute(statement)
+            with pytest.raises(ProtectionDenied, match=message):
+                migrate(db)
+
+
+def test_postgres_object_adapter_rejects_privileged_runtime(postgres_pool):
+    from psycopg_pool import ConnectionPool
+
+    with ConnectionPool("host=127.0.0.1 port=5432 dbname=riswan user=postgres", open=False) as pool:
+        with pytest.raises(ProtectionDenied, match="Invalid runtime database role or policy"):
+            PostgresObjects(pool)

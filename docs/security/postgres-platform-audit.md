@@ -29,7 +29,7 @@ A disposable CI fixture added 256 tenant records and queried through the restric
 
 The hosted route authorizes enrollment and stages provider and workload bindings in the control transaction. The binding insert and its structured security event share a savepoint. The product connection inserts the registration and its trigger-generated event, then commits independently. Control authorization remains locked through registration and window reservation. If the control commit fails after registration, the durable registration event still represents a product commit. Subsequent attempts verify the exact persisted registration and current enrollment before credential issuance and revalidate ownership before publishing.
 
-The tenant API applies actor, resource, operation, UTC time bounds and request filters only inside the authorized tenant. The cursor record must exist within the selected tenant and match the supplied predicates. Secret resource audit already uses the separate SECRET_AUDIT permission and a product-scoped transaction. The tenant timeline has no read path into pre-tenant authentication history.
+The tenant API applies actor, resource, operation, UTC time bounds and request filters only inside the authorized tenant. The cursor record must exist within the selected tenant and match the supplied predicates. Secret resource audit already uses the separate SECRET_AUDIT permission and a product-scoped transaction. Credential events are excluded from secret-resource audit even when the identifiers coincide. The tenant timeline has no read path into pre-tenant authentication history.
 
 | Additional audit distinction | Authoritative storage and access |
 | --- | --- |
