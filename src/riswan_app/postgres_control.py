@@ -62,6 +62,7 @@ class PostgresAuthorizationRepository(AuthorizationRepository):
                     """SELECT set_config('riswan.control_actor', %s, true),
                               set_config('riswan.control_tenant', '', true),
                               set_config('riswan.control_org', '', true),
+                              set_config('riswan.audit_read_tenant', '', true),
                               set_config('riswan.secret_product', '', true)""",
                     (str(principal.identity.identity_id),),
                 )

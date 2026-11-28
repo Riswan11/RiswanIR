@@ -694,13 +694,24 @@ class Secrets:
     def audit(self, key: UUID) -> list[SecretAccessEvent]:
         with self._operation(key, Permission.SECRET_AUDIT, "secret.audit.read") as context:
             self._load(context, key)
+            statement = (
+                """SELECT event FROM secret_access_events WHERE secret_id = ? AND tenant_id = ?
+                AND substr(json_extract(event, '$.action'), 1, 11) <> 'credential.'
+                ORDER BY sequence DESC LIMIT 100"""
+                if self.repository.initializes_sqlite_schema
+                else """SELECT event FROM secret_access_events WHERE secret_id = ? AND tenant_id = ?
+                AND product = ? AND left(event::jsonb->>'action', 11) <> 'credential.'
+                ORDER BY sequence DESC LIMIT 100"""
+            )
+            scope = (str(key), str(context.tenant_id))
             with self.repository._connection() as db:
                 return [
                     SecretAccessEvent.model_validate_json(row[0])
                     for row in db.execute(
-                        """SELECT event FROM secret_access_events WHERE secret_id = ? AND tenant_id = ?
-                    ORDER BY sequence DESC LIMIT 100""",
-                        (str(key), str(context.tenant_id)),
+                        statement,
+                        scope
+                        if self.repository.initializes_sqlite_schema
+                        else (*scope, context.product_id),
                     )
                 ]
 

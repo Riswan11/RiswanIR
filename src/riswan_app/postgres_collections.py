@@ -24,6 +24,7 @@ TABLES = (
     "collection_progress",
     "collection_observations",
     "collection_runs",
+    "collection_registration_audit",
 )
 
 
@@ -230,9 +231,19 @@ class PostgresCollections:
             run = uuid4()
             db.execute(
                 """INSERT INTO riswan_data.collection_runs
-                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (*scope, run, entry.workload_id, window.start, window.end, received, count),
+                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted,request_id,correlation_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    *scope,
+                    run,
+                    entry.workload_id,
+                    window.start,
+                    window.end,
+                    received,
+                    count,
+                    context.request_id,
+                    context.correlation_id,
+                ),
             )
             self._advance(db, scope, window.end)
             return run, count
@@ -246,16 +257,25 @@ class PostgresCollections:
         provider_failed: bool,
     ) -> bool:
         code = "provider_failure" if provider_failed else "storage_failure"
-        with self._transaction(entry) as (db, _, scope):
+        with self._transaction(entry) as (db, context, scope):
             self._verify_registration(db, scope, entry)
             if self._watermark(db, scope, lock=True) != expected:
                 return False
             db.execute(
                 """INSERT INTO riswan_data.collection_runs
                 (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,
-                 received,persisted,failure_code)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s)""",
-                (*scope, uuid4(), entry.workload_id, window.start, window.end, code),
+                 received,persisted,failure_code,request_id,correlation_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s,%s)""",
+                (
+                    *scope,
+                    uuid4(),
+                    entry.workload_id,
+                    window.start,
+                    window.end,
+                    code,
+                    context.request_id,
+                    context.correlation_id,
+                ),
             )
             db.execute(
                 """UPDATE riswan_data.collection_progress SET healthy=false, attempted_at=now(), failure_code=%s

@@ -31,13 +31,13 @@ def postgres_pool():
 
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         with pytest.MonkeyPatch.context() as patches:
-            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:15])
+            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:16])
             migrate(owner)
         migrate(owner)
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 17)]
+        ).fetchall() == [(version,) for version in range(1, 20)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -1695,7 +1695,7 @@ def test_postgres_secret_lifecycle_and_credential_leases(
     service = app._authenticated_routes.secrets.service
     worker = app.service.authenticate("work", bearer="test-workload-token")
     request = CredentialRequest(
-        integration_id=uuid4(),
+        integration_id=UUID(key),
         resource=ExternalReference(namespace=namespace, native_id="fixture"),
         workload_id=workload,
         purpose="collect",
@@ -1763,6 +1763,10 @@ def test_postgres_secret_lifecycle_and_credential_leases(
                 broker.execute(request.integration_id, "collect")
             with pytest.raises(AccessDenied):
                 service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
+
+    status, resource_audit = send(secret + "/audit")
+    assert status == 200 and resource_audit
+    assert all(not item["action"].startswith("credential.") for item in resource_audit)
 
     from psycopg_pool import PoolClosed
 
@@ -2118,10 +2122,17 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
             )
             db.execute(
                 """INSERT INTO riswan_data.collection_runs
-                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted)
-                SELECT %s,%s,%s,%s,gen_random_uuid(),%s,%s,%s,0,0
+                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted,request_id,correlation_id)
+                SELECT %s,%s,%s,%s,gen_random_uuid(),%s,%s,%s,0,0,%s,%s
                 FROM generate_series(1,256)""",
-                (*scope, workload, first.start, first.end),
+                (
+                    *scope,
+                    workload,
+                    first.start,
+                    first.end,
+                    context.request_id,
+                    context.correlation_id,
+                ),
             )
             for name, query, params in (
                 (
@@ -2172,6 +2183,9 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "interrupted",
         "outage",
         "outage_before",
+        "registration_rollback",
+        "binding_audit_outage",
+        "control_after_registration",
         "ambiguous",
         "expired",
         "ordered_disable",
@@ -2189,8 +2203,10 @@ def test_authenticated_postgres_collection_handoff(
     cloudtrail,
     monkeypatch,
     caplog,
+    record_property,
     outcome,
 ):
+    from dataclasses import replace
     from datetime import UTC, datetime, timedelta
     from threading import Event
     from unittest.mock import Mock
@@ -2394,10 +2410,35 @@ def test_authenticated_postgres_collection_handoff(
             raise psycopg.OperationalError("fixture reply lost after commit")
         return result
 
+    def fail_registration(*args):
+        raise psycopg.OperationalError("fixture storage failure after registration audit")
+
+    service = collection.service
+    audit = service._audit
+
+    def fail_binding_audit(context, key, action, *args, **kwargs):
+        if action == "credential.binding.created":
+            raise psycopg.OperationalError("fixture binding audit unavailable")
+        return audit(context, key, action, *args, **kwargs)
+
+    register = collection._repository.register
+
+    def fail_after_registration(registration):
+        register(registration)
+        raise psycopg.OperationalError("fixture control failure after product commit")
+
     with monkeypatch.context() as run_patches:
         try:
             if outcome == "outage_before":
                 run_patches.setattr(postgres_pool, "connection", offline)
+            if outcome == "control_after_registration":
+                run_patches.setattr(collection._repository, "register", fail_after_registration)
+            if outcome == "binding_audit_outage":
+                run_patches.setattr(service, "_audit", fail_binding_audit)
+            if outcome == "registration_rollback":
+                run_patches.setattr(
+                    collection._repository, "_verify_registration", fail_registration
+                )
             if outcome in {"ambiguous", "ordered_disable"}:
                 run_patches.setattr(collection._repository, "_publish", publish_with_fault)
             if outcome == "write_failure":
@@ -2419,6 +2460,9 @@ def test_authenticated_postgres_collection_handoff(
                         "cycle",
                         "outage",
                         "outage_before",
+                        "registration_rollback",
+                        "binding_audit_outage",
+                        "control_after_registration",
                         "ambiguous",
                         "expired",
                         "write_failure",
@@ -2442,6 +2486,157 @@ def test_authenticated_postgres_collection_handoff(
         assert not leases
         client.lookup_events.assert_not_called()
     if outcome == "success":
+        with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+            (actor, request_id, correlation) = admin.execute(
+                """SELECT actor_id, request_id, correlation_id FROM riswan_data.collection_runs
+                WHERE tenant_id = %s AND integration_id = %s""",
+                (UUID(tenant), entry.integration_id),
+            ).fetchone()
+            assert str(actor) == workload
+            registration = admin.execute(
+                """SELECT workload_id, provider_instance_id, request_id, correlation_id, to_jsonb(a)::text
+                FROM riswan_data.collection_registration_audit a
+                WHERE tenant_id = %s AND product_id = 'ir' AND integration_id = %s""",
+                (UUID(tenant), entry.integration_id),
+            ).fetchone()
+            assert registration[:4] == (actor, entry.instance_id, request_id, correlation)
+            assert credential_canary not in registration[4]
+            assert request_id and correlation == request_id
+            related = admin.execute(
+                """SELECT event::jsonb->>'action', event::jsonb->>'actor_id', event
+                FROM riswan_control.secret_access_events
+                WHERE tenant_id = %s AND product = 'ir' AND secret_id = %s
+                AND event::jsonb->>'request_id' = %s AND event::jsonb->>'correlation_id' = %s
+                AND event::jsonb->>'action' IN ('credential.binding.created', 'credential.lease.issued')
+                ORDER BY sequence""",
+                (tenant, str(entry.integration_id), request_id, correlation),
+            ).fetchall()
+            assert [row[:2] for row in related] == [
+                ("credential.binding.created", workload),
+                ("credential.lease.issued", workload),
+            ]
+            assert all(credential_canary not in row[2] for row in related)
+        from riswan_app.postgres_audit import (
+            CREDENTIAL_AUDIT_SQL,
+            CredentialAuditQuery,
+            credential_timeline,
+        )
+        from riswan_platform.authorization.enforcement import AccessDenied
+        from riswan_platform.identity.principal import bind_principal
+
+        owner = app.service.authenticate("audit", cookie=alice.split("=", 1)[1])
+        with bind_principal(owner):
+            context = service.tenancy.context_for(owner, UUID(tenant), "ir", "audit")
+            assert context is not None
+            with bind_context(context):
+                history, cursor = credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        workload_id=UUID(workload), correlation_id=correlation, limit=1
+                    ),
+                )
+                assert len(history) == 1 and cursor == history[0].id
+                earlier, _ = credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        workload_id=UUID(workload), correlation_id=correlation, before=cursor
+                    ),
+                )
+                assert earlier and all(event.correlation_id == correlation for event in earlier)
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(workload_id=uuid4(), before=cursor),
+                ) == ([], None)
+                issued, _ = credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        action="credential.lease.issued", outcome="success", request_id=request_id
+                    ),
+                )
+                assert len(issued) == 1 and issued[0].actor_id == workload
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        action="credential.lease.issued", end=issued[0].occurred_at
+                    ),
+                ) == ([], None)
+            with bind_context(replace(context, product_id="other")):
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(correlation_id=correlation, before=cursor),
+                ) == ([], None)
+        foreign = app.service.authenticate("audit", cookie=bob.split("=", 1)[1])
+        with bind_principal(foreign):
+            context = service.tenancy.context_for(foreign, UUID(other), "ir", "audit")
+            assert context is not None
+            with bind_context(context):
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(correlation_id=correlation, before=cursor),
+                ) == ([], None)
+        with (
+            bind_principal(worker),
+            bind_context(
+                PlatformContext(UUID(tenant), workload, "service", "ir", "audit", "audit")
+            ),
+            pytest.raises(AccessDenied),
+        ):
+            credential_timeline(service, entry.integration_id, CredentialAuditQuery())
+        with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+            with admin.transaction(force_rollback=True):
+                admin.execute(
+                    """INSERT INTO riswan_control.secret_access_events (secret_id, tenant_id, event)
+                    SELECT secret_id, tenant_id,
+                        jsonb_set(event::jsonb, '{id}', to_jsonb(gen_random_uuid()))::text
+                    FROM riswan_control.secret_access_events CROSS JOIN generate_series(1, 256)
+                    WHERE tenant_id = %s AND product = 'ir' AND secret_id = %s
+                    AND event::jsonb->>'action' = 'credential.lease.issued'""",
+                    (tenant, str(entry.integration_id)),
+                )
+                admin.execute("SET LOCAL ROLE riswan_control_runtime")
+                admin.execute(
+                    """SELECT set_config('riswan.control_actor', %s, true),
+                        set_config('riswan.control_tenant', %s, true),
+                        set_config('riswan.secret_product', 'ir', true)""",
+                    (str(owner.identity.identity_id), tenant),
+                )
+                admin.execute("SET LOCAL search_path = riswan_control, pg_catalog")
+                plan = admin.execute(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+                    + CREDENTIAL_AUDIT_SQL.replace("?", "%s"),
+                    (
+                        tenant,
+                        "ir",
+                        str(entry.integration_id),
+                        str(entry.integration_id),
+                        workload,
+                        workload,
+                        "credential.lease.issued",
+                        "credential.lease.issued",
+                        "success",
+                        "success",
+                        request_id,
+                        request_id,
+                        correlation,
+                        correlation,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        25,
+                    ),
+                ).fetchone()[0][0]
+                assert plan["Plan"]["Actual Rows"] == 25
+                record_property("credential_audit_query_plan", json.dumps(plan))
         assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
             "valid"
         ]
@@ -2460,4 +2655,240 @@ def test_authenticated_postgres_collection_handoff(
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    if outcome in {"registration_rollback", "binding_audit_outage", "control_after_registration"}:
+        assert not leases
+        client.lookup_events.assert_not_called()
+        with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as admin:
+            scope = (UUID(tenant), entry.integration_id)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_control.credential_bindings
+                WHERE tenant_id = %s AND integration_id = %s""",
+                (tenant, str(entry.integration_id)),
+            ).fetchone() == (0,)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_control.secret_access_events
+                WHERE tenant_id = %s AND secret_id = %s
+                AND event::jsonb->>'action' = 'credential.binding.created'""",
+                (tenant, str(entry.integration_id)),
+            ).fetchone() == (0,)
+            product_rows = int(outcome == "control_after_registration")
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_data.collection_registration_audit
+                WHERE tenant_id = %s AND integration_id = %s""",
+                scope,
+            ).fetchone() == (product_rows,)
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_data.collection_integrations
+                WHERE tenant_id = %s AND integration_id = %s""",
+                scope,
+            ).fetchone() == (product_rows,)
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+        with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as admin:
+            assert admin.execute(
+                """SELECT count(*) FROM riswan_data.collection_registration_audit
+                WHERE tenant_id = %s AND integration_id = %s""",
+                scope,
+            ).fetchone() == (1,)
     assert not list(tmp_path.glob("*.sqlite3"))
+
+
+def test_postgres_tenant_audit_requires_current_scoped_permission(
+    hosted_postgres, postgres_control_pool, record_property, monkeypatch
+):
+    from urllib.parse import urlencode
+
+    import psycopg
+
+    _, send, _, bob, tenant, other = hosted_postgres
+    _, own = send("/v1/organizations")
+    org = next(item for item in own if item["tenant_id"] == tenant)
+    _, foreign = send("/v1/organizations", cookie=bob)
+    foreign_org = next(item for item in foreign if item["tenant_id"] == other)
+    path = f"/v1/organizations/{org['id']}"
+    foreign_path = f"/v1/organizations/{foreign_org['id']}/audit"
+    route = path + "/audit"
+    assert send(path, "PUT", payload={"name": "Renamed fixture"})[0] == 200
+    status, page = send(route, query="limit=1")
+    assert status == 200
+    (first,) = page["events"]
+    assert first["event"] == "platform.tenancy.organization_updated"
+    assert page["next_before"] == first["id"]
+    assert send(route, query="before=" + page["next_before"])[1]["events"][0]["event"] == (
+        "platform.tenancy.organization_created"
+    )
+    assert send(route, query="request_id=" + first["request_id"])[1]["events"] == [first]
+    filters = {
+        "actor_id": first["actor_id"],
+        "operation": first["event"],
+        "start": first["occurred_at"],
+    }
+    if first["target"] is not None:
+        filters["resource"] = first["target"]
+    assert send(route, query=urlencode(filters))[1]["events"] == [first]
+    assert send(route, query=urlencode({"end": first["occurred_at"]}))[1]["events"]
+    assert send(route, query=urlencode({"actor_id": str(uuid4()), "before": first["id"]}))[0] == 404
+    assert send(route, query="start=2026-01-01")[0] == 400
+    assert send(route, query=urlencode({"start": "0001-01-01T00:00:00+01:00"}))[0] == 400
+    assert send(route, query="operation=malformed%27")[0] == 400
+    assert send(route, query="limit=0")[0] == 400
+    assert send(route, query="limit=1&limit=2")[0] == 400
+    assert send(route, cookie=bob)[0] == 404
+    assert send(foreign_path, query="before=" + first["id"], cookie=bob)[0] == 404
+    _, identity = send("/v1/identity/me", cookie=bob)
+    _, invitation = send(
+        path + "/invitations",
+        "POST",
+        payload={"role": "analyst", "identity_id": identity["identity_id"]},
+    )
+    assert (
+        send(
+            "/v1/organizations/invitations/accept",
+            "POST",
+            cookie=bob,
+            payload={"token": invitation["token"]},
+        )[0]
+        == 200
+    )
+    assert send(route, cookie=bob)[0] == 404
+    assert invitation["token"] not in json.dumps(send(route)[1])
+
+    from riswan_app.postgres_control import PostgresAuthorizationRepository
+    from riswan_platform.authorization import Permission
+
+    original = PostgresAuthorizationRepository.record
+
+    def unavailable(repo, event_type, decision):
+        if decision.action == Permission.AUDIT_READ:
+            raise psycopg.OperationalError("fixture audit sink unavailable")
+        return original(repo, event_type, decision)
+
+    with monkeypatch.context() as failure:
+        failure.setattr(PostgresAuthorizationRepository, "record", unavailable)
+        status, error = send(route)
+        assert status == 404
+        assert "events" not in error
+    from psycopg_pool import PoolClosed
+
+    def offline(*args, **kwargs):
+        raise PoolClosed("fixture")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(postgres_control_pool, "connection", offline)
+        status, error = send(route)
+        assert status == 503
+        assert "events" not in error
+    assert send(route)[0] == 200
+
+    with postgres_control_pool.connection() as db, db.transaction():
+        assert db.execute(
+            "SELECT count(*) FROM riswan_control.organization_audit_events"
+        ).fetchone() == (0,)
+        for statement in (
+            "DELETE FROM riswan_control.organization_audit_events",
+            "UPDATE riswan_control.organization_audit_events SET request_id = 'forged'",
+            "SELECT * FROM riswan_auth.authentication_events",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute(statement)
+    with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as db:
+        with db.transaction(force_rollback=True):
+            db.execute(
+                """INSERT INTO riswan_control.organization_audit_events
+                SELECT gen_random_uuid()::text, tenant_id, actor_id, event, target, occurred_at, request_id
+                FROM riswan_control.organization_audit_events CROSS JOIN generate_series(1, 256)
+                WHERE id = %s""",
+                (first["id"],),
+            )
+            db.execute("SET LOCAL ROLE riswan_control_runtime")
+            db.execute(
+                """SELECT set_config('riswan.control_actor', %s, true),
+                          set_config('riswan.control_tenant', %s, true),
+                          set_config('riswan.audit_read_tenant', %s, true)""",
+                (first["actor_id"], tenant, tenant),
+            )
+            plan = db.execute(
+                """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+                SELECT id FROM riswan_control.organization_audit_events WHERE tenant_id=%s
+                ORDER BY occurred_at DESC, id DESC LIMIT 25""",
+                (tenant,),
+            ).fetchone()[0][0]
+            assert plan["Plan"]["Actual Rows"] == 25
+            record_property("tenant_audit_query_plan", json.dumps(plan))
+
+
+def test_protected_object_audit_is_atomic_and_metadata_only(postgres_pool):
+    import psycopg
+
+    tenant, obj = uuid4(), uuid4()
+    context = PlatformContext(tenant, str(uuid4()), "service", "ir", "request", "correlation")
+    key = f"{tenant.hex}/{sha256(b'ir').hexdigest()}/{obj.hex}"
+    objects = PostgresObjects(postgres_pool)
+    with bind_context(context):
+        objects.put(key, b"never include this envelope")
+        with postgres_pool.connection() as db:
+            db.execute(
+                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', 'ir', true)",
+                (str(tenant),),
+            )
+            with (
+                pytest.raises((psycopg.IntegrityError, psycopg.errors.InsufficientPrivilege)),
+                db.transaction(),
+            ):
+                db.execute("DELETE FROM riswan_data.protected_objects WHERE object_id = %s", (obj,))
+            for operation in (
+                "SELECT * FROM riswan_data.protected_object_audit",
+                "UPDATE riswan_data.protected_object_audit SET actor_id = 'forged'",
+                "DELETE FROM riswan_data.protected_object_audit",
+            ):
+                with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                    db.execute(operation)
+        assert objects.get(key) == b"never include this envelope"
+        objects.delete(key)
+
+    with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as db:
+        rows = db.execute(
+            """SELECT operation, actor_id, actor_type, request_id, correlation_id,
+                      to_jsonb(a)::text
+                 FROM riswan_data.protected_object_audit a
+                WHERE tenant_id = %s AND product_id = 'ir' AND object_id = %s
+                ORDER BY occurred_at""",
+            (tenant, obj),
+        ).fetchall()
+    assert [row[:5] for row in rows] == [
+        (operation, context.actor_id, "service", "request", "correlation")
+        for operation in ("INSERT", "DELETE")
+    ]
+    assert all("never include" not in row[5] for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    [
+        (
+            "DELETE FROM riswan_data.schema_migrations WHERE version = 1",
+            "Unsupported PostgreSQL schema version.",
+        ),
+        (
+            "UPDATE riswan_data.schema_migrations SET checksum = 'fixture' WHERE version = 1",
+            "PostgreSQL migration checksum mismatch.",
+        ),
+    ],
+)
+def test_postgres_migration_rejects_invalid_history(postgres_pool, statement, message):
+    import psycopg
+
+    with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as db:
+        with db.transaction(force_rollback=True):
+            db.execute(statement)
+            with pytest.raises(ProtectionDenied, match=message):
+                migrate(db)
+
+
+def test_postgres_object_adapter_rejects_privileged_runtime(postgres_pool):
+    from psycopg_pool import ConnectionPool
+
+    with ConnectionPool("host=127.0.0.1 port=5432 dbname=riswan user=postgres", open=False) as pool:
+        with pytest.raises(ProtectionDenied, match="Invalid runtime database role or policy"):
+            PostgresObjects(pool)

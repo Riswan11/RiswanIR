@@ -20,6 +20,7 @@ from riswan_platform.tenancy import (
 
 from .hosted_collection import CollectionAPI
 from .hosted_product import HostedPostgresCases, HostedProduct
+from .postgres_audit import TenantAuditQuery, tenant_timeline
 from .secret_api import BASE as SECRETS_BASE
 from .secret_api import SecretAPI
 from .tenancy import Tenancy
@@ -145,6 +146,14 @@ class TenantAPI:
             return 200, self.tenancy.lifecycle(
                 principal, organization_id, change.status, request_id
             ).model_dump(mode="json")
+        if method == "GET" and suffix == "/audit":
+            return 200, tenant_timeline(
+                self.tenancy,
+                principal,
+                organization_id,
+                request_id,
+                TenantAuditQuery.parse(env.get("QUERY_STRING", "")),
+            )
         if method == "GET" and suffix == "/members":
             return 200, [
                 item.model_dump(mode="json")

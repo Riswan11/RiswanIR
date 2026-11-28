@@ -16,7 +16,7 @@ from .protected_objects import object_key
 
 class PostgresObjects:
     def __init__(self, pool: Any):
-        self._scope = ScopedPostgres(pool, ("protected_objects",))
+        self._scope = ScopedPostgres(pool, ("protected_objects", "protected_object_audit"))
 
     @contextmanager
     def _connection(self, key: str) -> Iterator[tuple[Any, UUID, str, UUID]]:
