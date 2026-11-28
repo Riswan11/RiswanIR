@@ -9,6 +9,7 @@ from riswan_platform.authorization.enforcement import AccessDenied
 from riswan_platform.data_protection import ProtectionDenied
 from riswan_platform.identity.models import ProviderUnavailable
 from riswan_platform.identity.principal import require_principal
+from riswan_platform.secrets import SecretError
 
 from .authorization_repository import AuthorizationRepository
 
@@ -60,13 +61,14 @@ class PostgresAuthorizationRepository(AuthorizationRepository):
                 db.execute(
                     """SELECT set_config('riswan.control_actor', %s, true),
                               set_config('riswan.control_tenant', '', true),
-                              set_config('riswan.control_org', '', true)""",
+                              set_config('riswan.control_org', '', true),
+                              set_config('riswan.secret_product', '', true)""",
                     (str(principal.identity.identity_id),),
                 )
                 token = self._control.set(ControlConnection(db))
                 try:
                     yield
-                except AccessDenied as exc:
+                except (AccessDenied, SecretError) as exc:
                     # Atomic business operations have already rolled back to their savepoint.
                     denied = exc
                 finally:
@@ -91,3 +93,7 @@ class PostgresAuthorizationRepository(AuthorizationRepository):
                           set_config('riswan.control_org', ?, true)""",
                 (tenant, organization or ""),
             )
+
+    def bind_secret_product(self, product: str) -> None:
+        with self._connection() as db:
+            db.execute("SELECT set_config('riswan.secret_product', ?, true)", (product,))

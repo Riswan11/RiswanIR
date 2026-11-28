@@ -22,6 +22,17 @@ class SecretRouting:
         self._registry = registry
         self._destinations = dict(destinations)
 
+    def require_development_only(self) -> None:
+        for (tenant, product), destination in self._destinations.items():
+            available = self._registry.capabilities(
+                destination.instance_id, tenant, product, destination.namespace
+            )
+            provider = self._registry.resolve(
+                destination.instance_id, tenant, product, destination.namespace, min(available)
+            )
+            if provider.development_only is not True:
+                raise ValueError("PostgreSQL preview requires development-only secret adapters.")
+
     def destination(self, tenant: UUID, product: str) -> SecretDestination | None:
         return self._destinations.get((tenant, product))
 

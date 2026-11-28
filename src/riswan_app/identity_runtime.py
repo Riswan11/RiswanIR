@@ -24,6 +24,7 @@ from .postgres_control import PostgresAuthorizationRepository
 from .postgres_identity import PostgresIdentityRepository
 from .secret_api import SecretAPI
 from .secret_providers import AWSSecretsProvider
+from .secret_routing import SecretRouting
 from .secrets import Secrets
 from .tenancy import Tenancy
 from .tenant_api import TenantAPI
@@ -37,6 +38,7 @@ def compose_identity(
     control_db: Path | None = None,
     postgres_case_pool: Any = None,
     enable_postgres_preview: bool = False,
+    preview_secret_routing: SecretRouting | None = None,
     postgres_identity_pool: Any = None,
     postgres_control_pool: Any = None,
     hosted_db: Path | None = None,
@@ -57,6 +59,8 @@ def compose_identity(
         raise ValueError(
             "PostgreSQL preview requires explicit development opt-in without providers."
         )
+    if preview_secret_routing is not None and postgres_control_pool is None:
+        raise ValueError("Preview secret routing requires PostgreSQL control storage.")
     if postgres_control_pool is not None and (
         postgres_identity_pool is None
         or control_db is not None
@@ -80,6 +84,8 @@ def compose_identity(
         raise ValueError("Configure a KMS key and region for the hosted secret provider.")
     if (secrets_providers is not None or collection_config is not None) and control_db is None:
         raise ValueError("Hosted providers require a control database.")
+    if preview_secret_routing is not None:
+        preview_secret_routing.require_development_only()
     if not has_crypto:
         raise ValueError("Install the identity extra for OIDC cryptographic verification.")
     if postgres_case_pool is not None:
@@ -151,6 +157,10 @@ def compose_identity(
             hosted = HostedProduct(tenancy, local_store)
         secret_routes = None
         collections = None
+        if preview_secret_routing is not None:
+            secret_routes = SecretAPI(
+                Secrets(tenancy, None, environment="development", routing=preview_secret_routing)
+            )
         if control_db is not None:
             service = Secrets(tenancy, fallback, environment="production", routing=routing)
             secret_routes = SecretAPI(service) if fallback or routing else None

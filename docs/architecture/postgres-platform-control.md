@@ -54,3 +54,60 @@ The disposable PostgreSQL test adds 512 organizations, tenants, memberships and 
 | Recipient invitation lookup with open and expiration predicates | Unique invitation digest index | 0.016 ms |
 
 Membership listing and authorization snapshot access are measured separately in the same test. Product assignments and resource grants share the actor/tenant snapshot lookup. Runtime audit access is append-only, so there is no application audit read plan. The fixture did not justify a new expiration or audit index. The advisory lock and RLS subplan costs need larger tenant-cardinality and concurrent-load measurements before a live cutover.
+
+## A.6.3 secrets and credential controls
+
+Migration 0015 adds tenant/product-scoped provider bindings, secret metadata,
+versions, rotation operations, workload policies and append-only access events.
+Credential bindings and lease references further require the current workload.
+The active version is a composite foreign key to the same secret in the same
+tenant and product. A provider instance is bound to its original scope and
+namespace. Grant rows reference both the relevant secret and an existing tenant
+membership. The existing enrollment timestamp check invalidates grants and
+credential bindings after re-enrollment.
+
+The development preview accepts a trusted, in-process preview_secret_routing
+object when all three PostgreSQL pools are configured. Only development-only
+adapters are accepted. It still requires the
+explicit development gate. CLI and environment-driven cloud provider
+configuration remain disabled for the PostgreSQL preview. The existing SDK
+contract and registry continue to resolve capabilities. The authorized
+credential broker stores integration, target and workload references and lease
+ID and expiry. The provider executes the credential operation within its
+trusted adapter. Integration registration and collection orchestration remain
+A.6.4.
+
+No credential material or recoverable temporary credential appears in the
+metadata contract. Authenticated secret endpoints return metadata only. Audit
+rows require the session-bound actor and grant no UPDATE or DELETE privilege.
+The control transaction preserves the existing writer ordering for rotation and
+policy changes. Database transactions cannot undo cloud provider calls.
+Provider retry uses existing operation and native version references. Deletion
+records an audited pending intent before provider calls so a lost completion
+audit can be reconciled without reopening access. Secret IDs cannot be reused
+across products in the same tenant because provider slot keys predate product scoping. Test
+coverage uses synthetic provider operations and localhost PostgreSQL.
+
+### A.6.3 security review boundaries
+
+| Table | Scope and reference constraints | Runtime permissions |
+| --- | --- | --- |
+| secret_provider_bindings | Tenant and product, with globally unique instance ID and tenant FK | Select and insert |
+| secret_metadata | Tenant and product, with tenant-wide secret ID uniqueness and composite provider and current-version FKs | Select, insert, update metadata |
+| secret_versions | Tenant, product, secret and version, with composite secret FK | Select, insert, update version record |
+| secret_rotations | Tenant, product, secret and operation, with composite secret FK | Select, insert, update operation state |
+| secret_consumer_policies | Tenant, product, secret, workload and purpose unique key, with composite secret and membership FKs | Select, insert, update policy and enrollment time, delete |
+| secret_access_events | Tenant, product and session-bound audit actor, with indexed scoped event sequence | Select and insert |
+| credential_bindings | Tenant, product, integration, workload and enrollment key, with composite provider and membership FKs | Select and insert |
+| credential_leases | Tenant, product and lease ID, with composite credential binding FK and expiry | Select and insert |
+
+All eight tables force RLS. The restricted control role owns no table.
+The migration role owns DDL and is separate from runtime access. Workload
+matching is enforced on credential bindings and leases. The trusted control
+transaction checks active membership and enrollment before provider execution
+while holding the same database advisory lock that serializes membership and
+lifecycle mutations. This orders revocation before or after issuance. It cannot
+revoke a credential already issued by a provider, and it cannot undo an
+external SDK action if the database transaction later fails. The broker returns
+only after its lease and audit transaction succeeds. Connector orchestration and
+production audit recovery are tracked in subsequent milestones.

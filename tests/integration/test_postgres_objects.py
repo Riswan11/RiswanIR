@@ -27,12 +27,17 @@ def postgres_pool():
         admin.execute("CREATE ROLE riswan_identity_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("CREATE ROLE riswan_control_runtime LOGIN NOSUPERUSER NOBYPASSRLS")
         admin.execute("GRANT CREATE ON DATABASE riswan TO riswan_migration")
+    from riswan_app import postgres_scope
+
     with psycopg.connect(connection + " user=riswan_migration") as owner:
+        with pytest.MonkeyPatch.context() as patches:
+            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:14])
+            migrate(owner)
         migrate(owner)
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 15)]
+        ).fetchall() == [(version,) for version in range(1, 16)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -1552,3 +1557,412 @@ def test_postgres_case_report_honors_evidence_export_denial(
     assert status == 200
     assert "canonical_events" not in report
     assert send(detail + "/events", tenant=tenant)[0] == 404
+
+
+def test_postgres_secret_lifecycle_and_credential_leases(
+    hosted_postgres,
+    postgres_pool,
+    postgres_identity_pool,
+    postgres_control_pool,
+    tmp_path,
+    monkeypatch,
+    record_property,
+    caplog,
+):
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    import psycopg
+
+    from riswan_app.identity_runtime import compose_identity
+    from riswan_app.registered_credentials import CredentialRegistration, RegisteredCredentialBroker
+    from riswan_app.secret_providers import MemoryProvider
+    from riswan_app.secret_routing import SecretDestination, SecretRouting
+    from riswan_platform.authorization.enforcement import AccessDenied
+    from riswan_platform.core.context import bind_context
+    from riswan_platform.identity.principal import bind_principal
+    from riswan_platform.secrets import CredentialLease, ProviderUnavailable, SecretReference
+    from riswan_platform.secrets.providers import (
+        Binding,
+        Capability,
+        CredentialRequest,
+        Entry,
+        ExternalReference,
+        GCPNamespace,
+        Registry,
+    )
+    from tests.integration.test_identity_runtime import call
+
+    _, _, alice, bob, tenant_id, other = hosted_postgres
+    tenant = UUID(tenant_id)
+    provider, instance = MemoryProvider(), uuid4()
+    namespace = GCPNamespace(project="synthetic", location="global")
+    binding = Binding(
+        instance_id=instance,
+        tenant_id=tenant,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.SECRET_READ, Capability.SECRET_WRITE, Capability.SECRET_DELETE},
+        development_only=True,
+    )
+    routing = SecretRouting(
+        Registry([Entry(binding, provider)], environment="test"),
+        {(tenant, "ir"): SecretDestination(instance, namespace)},
+    )
+
+    def compose():
+        return compose_identity(
+            tmp_path / "oidc.json",
+            None,
+            tmp_path / "workstation.sqlite3",
+            postgres_control_pool=postgres_control_pool,
+            postgres_case_pool=postgres_pool,
+            postgres_identity_pool=postgres_identity_pool,
+            enable_postgres_preview=True,
+            preview_secret_routing=routing,
+        )
+
+    app = compose()
+    value = "synthetic-provider-only-marker"
+    temporary = "synthetic-temporary-credential-marker"
+    key, version = str(uuid4()), str(uuid4())
+    base = "/v1/secrets"
+    secret = f"{base}/{key}"
+
+    def send(path, method="GET", payload=None, *, foreign=False):
+        status, _, body = call(
+            app,
+            path,
+            method,
+            cookie=bob if foreign else alice,
+            tenant=other if foreign else tenant_id,
+            origin="https://app.example",
+            payload=payload,
+        )
+        assert value not in json.dumps(body)
+        return status, body
+
+    assert (
+        send(base, "POST", {"id": key, "kind": "api_key", "name": "Fixture", "value": value})[0]
+        == 201
+    )
+    assert send(secret, foreign=True)[0] == 404
+    app = compose()
+    assert send(secret)[1]["current_version"] == key
+    failed = str(uuid4())
+
+    def fail_write(*args):
+        raise RuntimeError(value)
+
+    with monkeypatch.context() as patches:
+        patches.setattr(provider, "put", fail_write)
+        assert send(secret + "/rotate", "POST", {"operation_id": failed, "value": value})[0] == 503
+    assert send(secret)[1]["current_version"] == key
+    assert any(row["outcome"] == "failed" for row in send(secret + "/audit")[1])
+    rotation = {"operation_id": version, "value": value}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(
+            pool.map(
+                lambda _: send(secret + "/rotate", "POST", rotation)[1]["current_version"], range(2)
+            )
+        ) == [version, version]
+    assert send(secret + "/rollback", "POST", {"version_id": key})[1]["current_version"] == key
+
+    _, _, worker_data = call(app, "/v1/identity/me", authorization="Bearer test-workload-token")
+    workload = UUID(worker_data["identity_id"])
+    _, _, organizations = call(app, "/v1/organizations", cookie=alice)
+    org = next(item for item in organizations if item["tenant_id"] == tenant_id)
+    status, _, _ = call(
+        app,
+        f"/v1/organizations/{org['id']}/workloads",
+        "POST",
+        cookie=alice,
+        origin="https://app.example",
+        payload={"identity_id": str(workload)},
+    )
+    assert status == 204
+    expires = datetime.now(UTC) + timedelta(hours=1)
+    assert (
+        send(
+            secret + "/policy",
+            "PUT",
+            {"workload_id": str(workload), "purpose": "collect", "expires_at": expires.isoformat()},
+        )[0]
+        == 204
+    )
+
+    service = app._authenticated_routes.secrets.service
+    worker = app.service.authenticate("work", bearer="test-workload-token")
+    request = CredentialRequest(
+        integration_id=uuid4(),
+        resource=ExternalReference(namespace=namespace, native_id="fixture"),
+        workload_id=workload,
+        purpose="collect",
+        audience="fixture",
+    )
+    credential = Mock()
+    credential.execute.return_value = CredentialLease(id=uuid4(), expires_at=expires)
+    registry = Registry(
+        [
+            Entry(
+                binding.model_copy(update={"capabilities": {Capability.CREDENTIAL_ISSUE}}),
+                credential,
+            )
+        ],
+        environment="test",
+    )
+    with bind_principal(worker):
+        repo = service.repository
+        with repo.transaction():
+            context = service.tenancy.context_for(worker, tenant, "ir", "work")
+            with repo._connection() as conn:
+                joined = conn.execute(
+                    "SELECT joined_at FROM organization_memberships WHERE tenant_id = ? AND identity_id = ?",
+                    (tenant_id, str(workload)),
+                ).fetchone()[0]
+        assert context is not None
+        broker = RegisteredCredentialBroker(
+            service,
+            registry,
+            {
+                request.integration_id: CredentialRegistration(
+                    instance, tenant, "ir", joined, request
+                )
+            },
+        )
+        with bind_context(context):
+            assert service.use(
+                SecretReference(id=UUID(key)),
+                "collect",
+                lambda item: item.value.get_secret_value() == value,
+            )
+            with pytest.raises(AccessDenied):
+                broker.execute(request.integration_id, "unapproved")
+            credential.execute.assert_not_called()
+            credential.execute.side_effect = TimeoutError(temporary)
+            with pytest.raises(ProviderUnavailable) as rejected:
+                broker.execute(request.integration_id, "collect")
+            assert temporary not in str(rejected.value)
+            credential.execute.side_effect = None
+            valid = credential.execute.return_value
+            credential.execute.return_value = CredentialLease(
+                id=uuid4(), expires_at=datetime.now(UTC) - timedelta(seconds=1)
+            )
+            with pytest.raises(AccessDenied):
+                broker.execute(request.integration_id, "collect")
+            credential.execute.return_value = valid
+            credential.execute.reset_mock()
+
+            assert (
+                broker.execute(request.integration_id, "collect") == credential.execute.return_value
+            )
+
+        with bind_context(replace(context, product_id="other")):
+            with pytest.raises(AccessDenied):
+                broker.execute(request.integration_id, "collect")
+            with pytest.raises(AccessDenied):
+                service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
+
+    from psycopg_pool import PoolClosed
+
+    from riswan_platform.identity.models import ProviderUnavailable as StorageUnavailable
+
+    def unavailable():
+        raise PoolClosed("injected outage")
+
+    with bind_principal(worker), bind_context(context):
+        with monkeypatch.context() as patches:
+            patches.setattr(service.repository._pool, "connection", unavailable)
+            with pytest.raises(StorageUnavailable):
+                broker.execute(request.integration_id, "collect")
+    credential.execute.assert_called_once_with(request)
+    assert (
+        send(f"/v1/organizations/{org['id']}/lifecycle", "POST", {"status": "suspended"})[0] == 200
+    )
+    with bind_principal(worker), bind_context(context), pytest.raises(AccessDenied):
+        broker.execute(request.integration_id, "collect")
+    assert send(f"/v1/organizations/{org['id']}/lifecycle", "POST", {"status": "active"})[0] == 200
+
+    with postgres_control_pool.connection() as db, db.transaction(force_rollback=True):
+        assert db.execute("SELECT count(*) FROM riswan_control.secret_metadata").fetchone() == (0,)
+        db.execute(
+            """SELECT set_config('riswan.control_actor', %s, true),
+            set_config('riswan.control_tenant', %s, true), set_config('riswan.secret_product', 'ir', true)""",
+            (str(workload), tenant_id),
+        )
+        assert db.execute("SELECT id FROM riswan_control.credential_leases").fetchone() == (
+            str(credential.execute.return_value.id),
+        )
+        for query in (
+            "SELECT metadata FROM riswan_control.secret_metadata",
+            "SELECT event FROM riswan_control.secret_access_events",
+            "SELECT version FROM riswan_control.secret_versions",
+            "SELECT operation FROM riswan_control.secret_rotations",
+            "SELECT request FROM riswan_control.credential_bindings",
+        ):
+            rows = str(db.execute(query).fetchall())
+            assert value not in rows and temporary not in rows
+        db.execute(
+            """INSERT INTO riswan_control.secret_versions(secret_id, id, version)
+            SELECT %s, md5('plan-version-' || i)::uuid::text,
+                   json_build_object('id', md5('plan-version-' || i)::uuid::text)::text
+            FROM generate_series(1,256) g(i)""",
+            (key,),
+        )
+        for name, query in (
+            (
+                "secret_metadata",
+                "SELECT metadata FROM riswan_control.secret_metadata WHERE id = %s AND tenant_id = %s AND product = 'ir'",
+            ),
+            (
+                "secret_versions",
+                "SELECT version FROM riswan_control.secret_versions WHERE secret_id = %s AND tenant_id = %s AND product = 'ir' ORDER BY rowid DESC LIMIT 100",
+            ),
+            (
+                "secret_audit",
+                "SELECT event FROM riswan_control.secret_access_events WHERE secret_id = %s AND tenant_id = %s AND product = 'ir' ORDER BY sequence DESC LIMIT 100",
+            ),
+        ):
+            plan = db.execute(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, (key, tenant_id)
+            ).fetchone()[0][0]
+            assert plan["Plan"]["Actual Rows"] > 0
+            record_property(name + "_query_plan", json.dumps(plan))
+        # Make the plan fixture disposable within the surrounding transaction.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("DELETE FROM riswan_control.secret_access_events")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            db.execute("ALTER TABLE riswan_control.secret_metadata DISABLE ROW LEVEL SECURITY")
+        with pytest.raises(psycopg.errors.CheckViolation), db.transaction():
+            db.execute(
+                "UPDATE riswan_control.secret_metadata SET metadata = '{}' WHERE id = %s", (key,)
+            )
+        with pytest.raises(psycopg.errors.ForeignKeyViolation), db.transaction():
+            db.execute(
+                """UPDATE riswan_control.secret_metadata
+                SET metadata = jsonb_set(metadata::jsonb, '{current_version}', to_jsonb(%s::text))::text
+                WHERE id = %s""",
+                (str(uuid4()), key),
+            )
+    drift = GCPNamespace(project="different-fixture", location="global")
+    drifted = SecretRouting(
+        Registry(
+            [Entry(binding.model_copy(update={"namespace": drift}), provider)], environment="test"
+        ),
+        {(tenant, "ir"): SecretDestination(instance, drift)},
+    )
+    with monkeypatch.context() as patches:
+        patches.setattr(service, "routing", drifted)
+        patches.setattr(provider, "put", Mock())
+        assert (
+            send(secret + "/rotate", "POST", {"operation_id": str(uuid4()), "value": value})[0]
+            == 404
+        )
+        provider.put.assert_not_called()
+
+    candidate = str(uuid4())
+    save = service._save
+
+    def fail_promotion(db, item):
+        save(db, item)
+        raise psycopg.OperationalError("simulated promotion failure")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(service, "_save", fail_promotion)
+        assert (
+            send(secret + "/rotate", "POST", {"operation_id": candidate, "value": value})[0] == 503
+        )
+    assert send(secret)[1]["current_version"] == key
+    assert (
+        send(secret + "/rotate", "POST", {"operation_id": candidate, "value": value})[1][
+            "current_version"
+        ]
+        == candidate
+    )
+
+    status, _, _ = call(
+        app,
+        f"/v1/organizations/{org['id']}/members/{workload}",
+        "DELETE",
+        cookie=alice,
+        origin="https://app.example",
+    )
+    assert status == 204
+    status, _, _ = call(
+        app,
+        f"/v1/organizations/{org['id']}/workloads",
+        "POST",
+        cookie=alice,
+        origin="https://app.example",
+        payload={"identity_id": str(workload)},
+    )
+    assert status == 204
+    with bind_principal(worker), bind_context(context):
+        with pytest.raises(AccessDenied):
+            service.use(SecretReference(id=UUID(key)), "collect", lambda _: True)
+        with pytest.raises(AccessDenied):
+            broker.execute(request.integration_id, "collect")
+    credential.execute.assert_called_once_with(request)
+    assert send(secret + "/revoke", "POST")[1]["status"] == "revoked"
+    audit = service._audit
+
+    def fail_delete_completion(context, secret_id, action, outcome, reason, **kwargs):
+        if action == "secret.deletion.scheduled" and outcome == "success":
+            raise psycopg.OperationalError("simulated deletion audit failure")
+        audit(context, secret_id, action, outcome, reason, **kwargs)
+
+    with monkeypatch.context() as patches:
+        patches.setattr(service, "_audit", fail_delete_completion)
+        assert send(secret, "DELETE")[0] == 503
+    assert send(secret)[1]["status"] == "pending_deletion"
+    assert any(
+        event["action"] == "secret.deletion.reserved" for event in send(secret + "/audit")[1]
+    )
+    assert send(secret, "DELETE")[1]["status"] == "pending_deletion"
+    assert send(secret + "/confirm-deletion", "POST")[1]["status"] == "deleted"
+    assert (
+        send(f"/v1/organizations/{org['id']}/lifecycle", "POST", {"status": "archived"})[0] == 200
+    )
+    with bind_principal(worker), bind_context(context), pytest.raises(AccessDenied):
+        broker.execute(request.integration_id, "collect")
+    assert not list(tmp_path.glob("*.sqlite3"))
+    assert value not in caplog.text and temporary not in caplog.text
+
+
+def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkeypatch):
+    from riswan_app.identity_runtime import compose_identity
+    from riswan_app.secret_providers import MemoryProvider
+    from riswan_app.secret_routing import SecretDestination, SecretRouting
+    from riswan_platform.secrets.providers import Binding, Capability, Entry, GCPNamespace, Registry
+
+    class ProductionAdapter(MemoryProvider):
+        development_only = False
+
+    monkeypatch.setenv("RISWAN_IR_ENV", "development")
+    monkeypatch.delenv("SENTINELFORGE_ENV", raising=False)
+    tenant, instance = uuid4(), uuid4()
+    namespace = GCPNamespace(project="fixture", location="global")
+    binding = Binding(
+        instance_id=instance,
+        tenant_id=tenant,
+        product_id="ir",
+        namespace=namespace,
+        capabilities={Capability.SECRET_WRITE},
+    )
+    routing = SecretRouting(
+        Registry([Entry(binding, ProductionAdapter())], environment="test"),
+        {(tenant, "ir"): SecretDestination(instance, namespace)},
+    )
+    with pytest.raises(ValueError, match="development-only secret adapters"):
+        compose_identity(
+            tmp_path / "missing-config.json",
+            None,
+            tmp_path / "workstation.sqlite3",
+            postgres_case_pool=object(),
+            postgres_control_pool=object(),
+            postgres_identity_pool=object(),
+            enable_postgres_preview=True,
+            preview_secret_routing=routing,
+        )
+    assert list(tmp_path.iterdir()) == []

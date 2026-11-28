@@ -90,10 +90,11 @@ class Secrets:
         self.environment = environment
         self._validate = validate
         self.clock = clock
-        with self.repository.atomic() as db:
-            for statement in SCHEMA.split(";"):
-                if statement.strip():
-                    db.execute(statement)
+        if self.repository.initializes_sqlite_schema:
+            with self.repository.atomic() as db:
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        db.execute(statement)
 
     def _audit(
         self,
@@ -137,6 +138,7 @@ class Secrets:
         context = require_context()
         principal = require_principal()
         with self.repository.transaction():
+            scoped = False
             try:
                 trusted = self.tenancy.context_for(
                     principal, context.tenant_id, context.product_id, context.request_id
@@ -147,6 +149,8 @@ class Secrets:
                     or trusted.actor_type != context.actor_type
                 ):
                     raise AccessDenied
+                self.repository.bind_secret_product(context.product_id)
+                scoped = True
                 if permission is not None:
                     org = Scope(ScopeType.ORGANIZATION, str(context.tenant_id))
                     resource = Resource(context.tenant_id, "platform", org)
@@ -165,7 +169,8 @@ class Secrets:
                     "secret.access": "secret.access.denied",
                     "credential.lease": "credential.lease.denied",
                 }.get(action, action)
-                self._audit(context, key, denial, "denied", "ACCESS_DENIED")
+                if scoped or self.repository.initializes_sqlite_schema:
+                    self._audit(context, key, denial, "denied", "ACCESS_DENIED")
                 raise
             except SecretError:
                 self._audit(context, key, action, "failed", "OPERATION_FAILED")
@@ -189,6 +194,9 @@ class Secrets:
         if item.provider_instance_id is not None:
             if self.routing is None:
                 raise ProviderUnavailable("Secret provider binding unavailable.")
+            if not self.repository.initializes_sqlite_schema:
+                with self.repository._connection() as db:
+                    self._register_binding(db, item)
             provider = self.routing.provider(item, capability)
         else:
             if self.provider is None or item.provider != self.provider.name:
@@ -242,10 +250,42 @@ class Secrets:
         return provider.get(self._key(item, version.id))
 
     def _save(self, db, item: SecretMetadata) -> None:
+        self._register_binding(db, item)
         db.execute(
             "UPDATE secret_metadata SET metadata = ? WHERE id = ?",
             (item.model_dump_json(), str(item.id)),
         )
+
+    def _register_binding(self, db, item: SecretMetadata) -> None:
+        if self.repository.initializes_sqlite_schema or item.provider_instance_id is None:
+            return
+        destination = (
+            self.routing.destination(item.tenant_id, item.product_id) if self.routing else None
+        )
+        if destination is None or destination.instance_id != item.provider_instance_id:
+            raise AccessDenied
+        self._persist_provider(
+            db,
+            str(item.tenant_id),
+            item.product_id,
+            destination.instance_id,
+            destination.namespace.model_dump_json(),
+        )
+
+    @staticmethod
+    def _persist_provider(db, tenant: str, product: str, instance: UUID, binding: str) -> None:
+        keys = (tenant, product, str(instance))
+        db.execute(
+            """INSERT INTO secret_provider_bindings VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+            (*keys, binding),
+        )
+        row = db.execute(
+            """SELECT binding FROM secret_provider_bindings
+            WHERE tenant_id = ? AND product = ? AND instance_id = ?""",
+            keys,
+        ).fetchone()
+        if row is None or row[0] != binding:
+            raise AccessDenied
 
     def _validate_material(self, item: SecretMetadata, material: SecretMaterial) -> None:
         checked_material(material)
@@ -297,8 +337,10 @@ class Secrets:
                 rotation=request.rotation,
             )
             with self.repository._connection() as db:
+                self._register_binding(db, item)
                 inserted = db.execute(
-                    "INSERT OR IGNORE INTO secret_metadata VALUES (?, ?, ?, ?)",
+                    """INSERT INTO secret_metadata (id, tenant_id, product, metadata)
+                    VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING""",
                     (str(item.id), str(item.tenant_id), item.product_id, item.model_dump_json()),
                 )
             if not inserted.rowcount:
@@ -540,10 +582,20 @@ class Secrets:
                     ).fetchone()
                     if joined is None or not self.tenancy.active_workload(policy.workload_id):
                         raise AccessDenied
-                    db.execute(
-                        "INSERT OR REPLACE INTO secret_consumer_policies VALUES (?, ?, ?, ?, ?)",
-                        (*keys, policy.model_dump_json(), joined[0]),
+                    statement = (
+                        """INSERT INTO secret_consumer_policies
+                        (secret_id, workload_id, purpose, policy, membership_joined)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (secret_id, workload_id, purpose)
+                        DO UPDATE SET policy = excluded.policy, membership_joined = excluded.membership_joined"""
+                        if self.repository.initializes_sqlite_schema
+                        else """INSERT INTO secret_consumer_policies
+                        (secret_id, workload_id, purpose, policy, membership_joined)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (secret_id, workload_id, purpose, tenant_id, product)
+                        DO UPDATE SET policy = excluded.policy, membership_joined = excluded.membership_joined"""
                     )
+                    db.execute(statement, (*keys, policy.model_dump_json(), joined[0]))
 
     def use(
         self, reference: SecretReference, purpose: str, consume: Callable[[SecretMaterial], Result]
@@ -594,6 +646,19 @@ class Secrets:
 
     def delete(self, key: UUID, *, confirm: bool = False) -> SecretMetadata:
         action = "secret.deleted" if confirm else "secret.deletion.scheduled"
+        if not confirm:
+            with self._operation(
+                key, Permission.SECRET_DELETE, "secret.deletion.reserved"
+            ) as context:
+                item = self._load(context, key)
+                if item.status == Status.DELETED:
+                    return item
+                if item.status != Status.PENDING_DELETION:
+                    item = item.model_copy(
+                        update={"status": Status.PENDING_DELETION, "updated_at": self.clock()}
+                    )
+                    with self.repository.atomic() as db:
+                        self._save(db, item)
         with self._operation(key, Permission.SECRET_DELETE, action) as context:
             item = self._load(context, key)
             if item.status == Status.DELETED:
@@ -608,10 +673,6 @@ class Secrets:
                     )
                 ]
                 if not confirm:
-                    item = item.model_copy(
-                        update={"status": Status.PENDING_DELETION, "updated_at": self.clock()}
-                    )
-                    self._save(db, item)
                     for version in versions:
                         self._provider(item, Capability.SECRET_DELETE).schedule_delete(
                             self._key(item, version)

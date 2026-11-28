@@ -24,6 +24,7 @@ MIGRATIONS = (
     "0012_memory_history.sql",
     "0013_platform_identity.sql",
     "0014_platform_control.sql",
+    "0015_secrets.sql",
 )
 
 

@@ -365,7 +365,7 @@ def test_registered_broker_authorizes_before_resolving_provider(secrets):
         broker.execute(request.integration_id, "collect")
 
 
-def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets):
+def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets, monkeypatch):
     from riswan_app.secret_routing import SecretDestination, SecretRouting
     from riswan_platform.secrets.providers import AWSNamespace, Binding, Capability, Entry, Registry
 
@@ -406,6 +406,18 @@ def test_legacy_aws_metadata_binds_without_rewriting_provider_paths(secrets):
             ).provider_instance_id
             == binding.instance_id
         )
+
+        with pytest.raises(AccessDenied):
+            configured.bind_existing(legacy.id)
+        for missing in (None, SecretRouting(Registry([], environment="test"), {})):
+            with monkeypatch.context() as patches:
+                patches.setattr(configured, "routing", missing)
+                with pytest.raises(ProviderUnavailable):
+                    configured.rotate(legacy.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        with monkeypatch.context() as patches:
+            patches.setattr(service.provider, "name", "unexpected-provider")
+            with pytest.raises(ProviderUnavailable):
+                configured.rotate(legacy.id, RotationRequest(operation_id=uuid4(), value=VALUE))
 
 
 def test_native_rotation_retry_reconciles_ambiguous_write_without_replay(secrets):
@@ -468,3 +480,144 @@ def test_native_rotation_retry_reconciles_ambiguous_write_without_replay(secrets
         assert configured.versions(request.id)[0].native_version == "native-1"
     client.set_secret.assert_called_once()
     assert VALUE.encode() not in service.repository.path.read_bytes()
+
+
+def test_secret_lifecycle_rejects_invalid_transitions(secrets, monkeypatch, caplog):
+    from riswan_platform.secrets import Update
+
+    service, owner, worker, org, now = secrets
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    assert service.provider is not None
+    provider = service.provider
+    expiry = now[0] + timedelta(hours=1)
+    with principal, context:
+        active = service.register(request)
+        assert service.register(request) == active
+        with pytest.raises(AccessDenied):
+            service.delete(request.id, confirm=True)
+        with pytest.raises(AccessDenied):
+            service.rollback(request.id, request.id)
+        with pytest.raises(AccessDenied):
+            service.rollback(request.id, uuid4())
+        with pytest.raises(SecretError):
+            service.update(request.id, Update(name=None))
+        changed = service.update(
+            request.id, Update.model_validate({"rotation": {"interval_days": 2}})
+        )
+        assert changed.next_rotation_at == changed.last_rotated_at + timedelta(days=2)
+        policy = SecretAccessPolicy(
+            workload_id=worker.identity.identity_id, purpose="read", expires_at=expiry
+        )
+        service.set_policy(request.id, policy)
+        with pytest.raises(AccessDenied):
+            service.set_policy(
+                request.id, policy.model_copy(update={"workload_id": owner.identity.identity_id})
+            )
+
+    def provider_timeout(*args):
+        raise TimeoutError(VALUE)
+
+    with monkeypatch.context() as patches:
+        patches.setattr(provider, "get", provider_timeout)
+        principal, context = contexts(service, worker, org)
+        with principal, context, pytest.raises(ProviderUnavailable) as failure:
+            service.use(SecretReference(id=request.id), "read", lambda _: None)
+        assert VALUE not in str(failure.value)
+
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        service.set_policy(request.id, policy, revoke=True)
+        revoked = service.revoke(request.id)
+        assert service.revoke(request.id) == revoked
+        with pytest.raises(AccessDenied):
+            service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        with pytest.raises(AccessDenied):
+            service.update(request.id, Update(name="Changed"))
+        service.delete(request.id)
+        with monkeypatch.context() as patches:
+            patches.setattr(provider, "deleted", lambda _: False)
+            assert service.delete(request.id, confirm=True).status == "pending_deletion"
+        deleted = service.delete(request.id, confirm=True)
+        assert service.delete(request.id) == deleted
+    assert VALUE not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["validation", "readback"])
+def test_rotation_never_promotes_unverified_provider_values(secrets, monkeypatch, failure):
+    service, owner, _, org, _ = secrets
+    assert service.provider is not None
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        baseline = service.register(request)
+        with monkeypatch.context() as patches:
+            if failure == "validation":
+                patches.setattr(service, "_validate", lambda *_: False)
+            else:
+                patches.setattr(
+                    service.provider, "get", lambda _: SecretMaterial(value="mismatched")
+                )
+            with pytest.raises(SecretError) as rejected:
+                service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        assert VALUE not in str(rejected.value)
+        assert service.metadata(request.id).current_version == baseline.current_version
+
+
+def test_secret_provider_and_context_fail_closed(secrets, monkeypatch):
+    from dataclasses import replace
+
+    service, owner, _, org, _ = secrets
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    trusted = service.tenancy.context_for(owner, org.tenant_id, "ir", "review")
+    assert trusted is not None
+    with bind_principal(owner), bind_context(replace(trusted, actor_id=str(uuid4()))):
+        with pytest.raises(AccessDenied):
+            service.register(request)
+    with bind_principal(owner), bind_context(trusted):
+        service.register(request)
+        with monkeypatch.context() as patches:
+            patches.setattr(service, "environment", "production")
+            with pytest.raises(ProviderUnavailable):
+                service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+        with monkeypatch.context() as patches:
+            patches.setattr(service, "provider", None)
+            with pytest.raises(ProviderUnavailable):
+                service.rotate(request.id, RotationRequest(operation_id=uuid4(), value=VALUE))
+            with pytest.raises(ProviderUnavailable):
+                service.register(request.model_copy(update={"id": uuid4()}))
+        assert service.metadata(request.id).current_version == request.id
+
+
+def test_secret_policy_denies_workload_administration(secrets):
+    service, owner, worker, org, _ = secrets
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        service.register(request)
+        with pytest.raises(AccessDenied):
+            service.bind_existing(request.id)
+
+    principal, context = contexts(service, worker, org)
+    with principal, context, pytest.raises(AccessDenied):
+        service.metadata(request.id)
+
+
+def test_failed_registration_cannot_rebind_to_a_different_secret_kind(secrets, monkeypatch):
+    service, owner, _, org, _ = secrets
+    assert service.provider is not None
+    request = Registration(id=uuid4(), name="Fixture", kind="api_key", value=VALUE)
+
+    def fail_before_write(*args):
+        raise TimeoutError(VALUE)
+
+    principal, context = contexts(service, owner, org)
+    with principal, context:
+        with monkeypatch.context() as patches:
+            patches.setattr(service.provider, "put", fail_before_write)
+            with pytest.raises(ProviderUnavailable):
+                service.register(request)
+        with pytest.raises(SecretError, match="registration conflict"):
+            service.register(request.model_copy(update={"kind": "oauth_refresh"}))
+        assert service.metadata(request.id).status == "created"
+        assert service.register(request).status == "active"
