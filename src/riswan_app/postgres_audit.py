@@ -139,6 +139,30 @@ def tenant_timeline(
     }
 
 
+CREDENTIAL_AUDIT_SQL = """WITH scoped AS (
+    SELECT sequence, event::jsonb AS data FROM secret_access_events
+    WHERE tenant_id = ? AND product = ? AND secret_id = ?
+    AND (
+        event::jsonb->>'integration_id' = ?
+        OR (event::jsonb->>'integration_id' IS NULL
+            AND event::jsonb->>'action' IN ('credential.lease', 'credential.lease.denied'))
+    )
+    AND left(event::jsonb->>'action', 11) = 'credential.'
+    AND (?::text IS NULL OR event::jsonb->>'actor_id' = ?)
+    AND (?::text IS NULL OR event::jsonb->>'action' = ?)
+    AND (?::text IS NULL OR event::jsonb->>'outcome' = ?)
+    AND (?::text IS NULL OR event::jsonb->>'request_id' = ?)
+    AND (?::text IS NULL OR event::jsonb->>'correlation_id' = ?)
+    AND (?::timestamptz IS NULL OR (event::jsonb->>'occurred_at')::timestamptz >= ?)
+    AND (?::timestamptz IS NULL OR (event::jsonb->>'occurred_at')::timestamptz < ?)
+)
+SELECT data FROM scoped
+WHERE (?::text IS NULL OR sequence < (
+    SELECT sequence FROM scoped WHERE data->>'id' = ?
+))
+ORDER BY sequence DESC LIMIT ?"""
+
+
 @dataclass(frozen=True, slots=True)
 class CredentialAuditQuery:
     workload_id: UUID | None = None
@@ -146,6 +170,8 @@ class CredentialAuditQuery:
     outcome: str | None = None
     request_id: str | None = None
     correlation_id: str | None = None
+    start: datetime | None = None
+    end: datetime | None = None
     before: UUID | None = None
     limit: int = 25
 
@@ -158,6 +184,10 @@ def credential_timeline(
         raise AccessDenied
     if not 1 <= query.limit <= 100:
         raise ValueError("Invalid audit limit.")
+    if any(value is not None and value.utcoffset() is None for value in (query.start, query.end)):
+        raise ValueError("Audit time requires a UTC offset.")
+    if query.start is not None and query.end is not None and query.start >= query.end:
+        raise ValueError("Invalid audit time range.")
     with service._operation(
         integration_id, Permission.SECRET_AUDIT, "credential.audit.read"
     ) as context:
@@ -167,30 +197,13 @@ def credential_timeline(
             query.outcome,
             query.request_id,
             query.correlation_id,
+            query.start,
+            query.end,
         )
         before = str(query.before) if query.before else None
         with service.repository._connection() as db:
             rows = db.execute(
-                """WITH scoped AS (
-                    SELECT sequence, event::jsonb AS data FROM secret_access_events
-                    WHERE tenant_id = ? AND product = ? AND secret_id = ?
-                    AND (
-                        event::jsonb->>'integration_id' = ?
-                        OR (event::jsonb->>'integration_id' IS NULL
-                            AND event::jsonb->>'action' IN ('credential.lease', 'credential.lease.denied'))
-                    )
-                    AND left(event::jsonb->>'action', 11) = 'credential.'
-                    AND (?::text IS NULL OR event::jsonb->>'actor_id' = ?)
-                    AND (?::text IS NULL OR event::jsonb->>'action' = ?)
-                    AND (?::text IS NULL OR event::jsonb->>'outcome' = ?)
-                    AND (?::text IS NULL OR event::jsonb->>'request_id' = ?)
-                    AND (?::text IS NULL OR event::jsonb->>'correlation_id' = ?)
-                )
-                SELECT data FROM scoped
-                WHERE (?::text IS NULL OR sequence < (
-                    SELECT sequence FROM scoped WHERE data->>'id' = ?
-                ))
-                ORDER BY sequence DESC LIMIT ?""",
+                CREDENTIAL_AUDIT_SQL,
                 (
                     str(context.tenant_id),
                     context.product_id,

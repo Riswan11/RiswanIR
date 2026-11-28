@@ -2202,6 +2202,7 @@ def test_authenticated_postgres_collection_handoff(
     cloudtrail,
     monkeypatch,
     caplog,
+    record_property,
     outcome,
 ):
     from datetime import UTC, datetime, timedelta
@@ -2504,7 +2505,11 @@ def test_authenticated_postgres_collection_handoff(
                 ("credential.lease.issued", workload),
             ]
             assert all(credential_canary not in row[2] for row in related)
-        from riswan_app.postgres_audit import CredentialAuditQuery, credential_timeline
+        from riswan_app.postgres_audit import (
+            CREDENTIAL_AUDIT_SQL,
+            CredentialAuditQuery,
+            credential_timeline,
+        )
         from riswan_platform.authorization.enforcement import AccessDenied
         from riswan_platform.identity.principal import bind_principal
 
@@ -2542,6 +2547,13 @@ def test_authenticated_postgres_collection_handoff(
                     ),
                 )
                 assert len(issued) == 1 and issued[0].actor_id == workload
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        action="credential.lease.issued", end=issued[0].occurred_at
+                    ),
+                ) == ([], None)
         foreign = app.service.authenticate("audit", cookie=bob.split("=", 1)[1])
         with bind_principal(foreign):
             context = service.tenancy.context_for(foreign, UUID(other), "ir", "audit")
@@ -2560,6 +2572,54 @@ def test_authenticated_postgres_collection_handoff(
             pytest.raises(AccessDenied),
         ):
             credential_timeline(service, entry.integration_id, CredentialAuditQuery())
+        with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+            with admin.transaction(force_rollback=True):
+                admin.execute(
+                    """INSERT INTO riswan_control.secret_access_events (secret_id, tenant_id, event)
+                    SELECT secret_id, tenant_id,
+                        jsonb_set(event::jsonb, '{id}', to_jsonb(gen_random_uuid()))::text
+                    FROM riswan_control.secret_access_events CROSS JOIN generate_series(1, 256)
+                    WHERE tenant_id = %s AND product = 'ir' AND secret_id = %s
+                    AND event::jsonb->>'action' = 'credential.lease.issued'""",
+                    (tenant, str(entry.integration_id)),
+                )
+                admin.execute("SET LOCAL ROLE riswan_control_runtime")
+                admin.execute(
+                    """SELECT set_config('riswan.control_actor', %s, true),
+                        set_config('riswan.control_tenant', %s, true),
+                        set_config('riswan.secret_product', 'ir', true)""",
+                    (str(owner.identity.identity_id), tenant),
+                )
+                admin.execute("SET LOCAL search_path = riswan_control, pg_catalog")
+                plan = admin.execute(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+                    + CREDENTIAL_AUDIT_SQL.replace("?", "%s"),
+                    (
+                        tenant,
+                        "ir",
+                        str(entry.integration_id),
+                        str(entry.integration_id),
+                        workload,
+                        workload,
+                        "credential.lease.issued",
+                        "credential.lease.issued",
+                        "success",
+                        "success",
+                        request_id,
+                        request_id,
+                        correlation,
+                        correlation,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        25,
+                    ),
+                ).fetchone()[0][0]
+                assert plan["Plan"]["Actual Rows"] == 25
+                record_property("credential_audit_query_plan", json.dumps(plan))
         assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
             "valid"
         ]
