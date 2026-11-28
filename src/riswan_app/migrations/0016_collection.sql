@@ -1,13 +1,15 @@
 CREATE TABLE riswan_data.collection_integrations (
  tenant_id uuid NOT NULL, product_id text NOT NULL, integration_id uuid NOT NULL,
  workload_id uuid NOT NULL, provider_instance_id uuid NOT NULL, source_scope text NOT NULL,
- connector text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ connector text NOT NULL, membership_joined timestamptz NOT NULL, namespace text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY (tenant_id, product_id, integration_id),
  UNIQUE (tenant_id, product_id, integration_id, source_scope)
 );
 CREATE TABLE riswan_data.collection_progress (
  tenant_id uuid NOT NULL, product_id text NOT NULL, integration_id uuid NOT NULL,
  source_scope text NOT NULL, watermark timestamptz, healthy boolean, attempted_at timestamptz,
+ failure_code text CHECK (failure_code IN ('provider_failure', 'storage_failure')),
  PRIMARY KEY (tenant_id, product_id, integration_id, source_scope),
  FOREIGN KEY (tenant_id, product_id, integration_id, source_scope)
  REFERENCES riswan_data.collection_integrations (tenant_id, product_id, integration_id, source_scope)
@@ -28,6 +30,7 @@ CREATE TABLE riswan_data.collection_runs (
  start_at timestamptz NOT NULL, end_at timestamptz NOT NULL, completed_at timestamptz NOT NULL DEFAULT now(),
  received bigint NOT NULL CHECK (received >= 0),
  persisted bigint NOT NULL CHECK (persisted BETWEEN 0 AND received),
+ failure_code text CHECK (failure_code IN ('provider_failure', 'storage_failure')),
  PRIMARY KEY (tenant_id, product_id, integration_id, source_scope, run_id),
  CHECK (end_at > start_at),
  FOREIGN KEY (tenant_id, product_id, integration_id, source_scope)
@@ -40,12 +43,20 @@ BEGIN
  LOOP
   EXECUTE format('ALTER TABLE riswan_data.%I ENABLE ROW LEVEL SECURITY', t);
   EXECUTE format('ALTER TABLE riswan_data.%I FORCE ROW LEVEL SECURITY', t);
-  EXECUTE format('CREATE POLICY collection_scope ON riswan_data.%I USING (
-   tenant_id = nullif(current_setting(''riswan.tenant_id'',true),'''')::uuid
-   AND product_id = nullif(current_setting(''riswan.product_id'',true),'''')
-   AND integration_id = nullif(current_setting(''riswan.collection_integration'',true),'''')::uuid)', t);
+  IF t = 'collection_integrations' THEN
+   EXECUTE 'CREATE POLICY collection_scope ON riswan_data.collection_integrations USING (
+     tenant_id = nullif(current_setting(''riswan.tenant_id'',true),'''')::uuid
+     AND product_id = nullif(current_setting(''riswan.product_id'',true),'''')
+     AND integration_id = nullif(current_setting(''riswan.collection_integration'',true),'''')::uuid
+     AND workload_id = nullif(current_setting(''riswan.collection_workload'',true),'''')::uuid)';
+  ELSE
+   EXECUTE format('CREATE POLICY collection_scope ON riswan_data.%I USING (
+     EXISTS (SELECT 1 FROM riswan_data.collection_integrations i
+     WHERE (i.tenant_id,i.product_id,i.integration_id,i.source_scope) =
+     (%I.tenant_id,%I.product_id,%I.integration_id,%I.source_scope)))', t,t,t,t,t);
+  END IF;
   EXECUTE format('GRANT SELECT, INSERT ON riswan_data.%I TO riswan_runtime', t);
  END LOOP;
 END;
 $ddl$;
-GRANT UPDATE (watermark, healthy, attempted_at) ON riswan_data.collection_progress TO riswan_runtime;
+GRANT UPDATE (watermark, healthy, attempted_at, failure_code) ON riswan_data.collection_progress TO riswan_runtime;

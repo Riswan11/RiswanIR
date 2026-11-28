@@ -31,7 +31,7 @@ def postgres_pool():
 
     with psycopg.connect(connection + " user=riswan_migration") as owner:
         with pytest.MonkeyPatch.context() as patches:
-            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:14])
+            patches.setattr(postgres_scope, "MIGRATIONS", postgres_scope.MIGRATIONS[:15])
             migrate(owner)
         migrate(owner)
         migrate(owner)
@@ -1971,14 +1971,16 @@ def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkey
 def test_postgres_collection_checkpoint_and_evidence_commit_together(
     hosted_postgres, postgres_pool, cloudtrail, monkeypatch
 ):
+    from dataclasses import replace
     from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
 
     from riswan_app.hosted_collection import CollectionRegistration
     from riswan_app.postgres_collections import PostgresCollections
     from riswan_ir.connectors.base import CollectedBatch, CollectionFailure
     from riswan_ir.models.collection import CollectionRequest
 
-    app, send, _, _, tenant, _ = hosted_postgres
+    app, send, _, _, tenant, other = hosted_postgres
     collection = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
     source = cloudtrail["Records"][0]
     principal = source["userIdentity"]["arn"]
@@ -2016,6 +2018,13 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         UUID(tenant), str(workload), "service", "ir", "request", "correlation"
     )
     batch = CollectedBatch("fixture/location", [source, source])
+    connector = Mock()
+    connector.collect.side_effect = lambda _: iter([batch])
+
+    def partial(_):
+        yield batch
+        raise TimeoutError("synthetic provider detail")
+
     with bind_context(context):
         assert collection.register(entry) is None
         advance = collection._advance
@@ -2027,22 +2036,38 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         with monkeypatch.context() as patches:
             patches.setattr(collection, "_advance", fail_after_checkpoint)
             with pytest.raises(RuntimeError, match="injected checkpoint failure"):
-                collection.publish(entry, first, None, [batch])
+                collection.collect_and_publish(entry, first, None, connector)
         assert collection.register(entry) is None
+        with monkeypatch.context() as patches:
+            patches.setattr(connector.collect, "side_effect", partial)
+            with pytest.raises(CollectionFailure, match="provider_failure"):
+                collection.collect_and_publish(entry, first, None, connector)
+        with collection._transaction(entry) as (db, _, _):
+            assert db.execute(
+                "SELECT healthy, watermark, failure_code FROM riswan_data.collection_progress"
+            ).fetchone() == (False, None, "provider_failure")
+    for denied in (
+        replace(context, tenant_id=UUID(other)),
+        replace(context, product_id="other"),
+        replace(context, actor_id=str(uuid4())),
+    ):
+        with bind_context(denied), pytest.raises(CollectionFailure, match="scope_denied"):
+            collection.register(entry)
     assert send("/v1/investigations", tenant=tenant) == (200, [])
 
     with bind_context(context):
-        assert collection.publish(entry, first, None, [batch])[1] == 1
+        assert collection.collect_and_publish(entry, first, None, connector)[1] == 1
         with pytest.raises(CollectionFailure, match="stale_checkpoint"):
-            collection.publish(entry, second, None, [batch])
-        assert collection.publish(entry, second, now, [batch])[1] == 0
+            collection.collect_and_publish(entry, second, None, connector)
+        assert collection.collect_and_publish(entry, second, now, connector)[1] == 0
+        assert not collection.record_failure(entry, second, now, provider_failed=False)
         newest = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
         assert newest.register(entry) == second.end
         with newest._transaction(entry) as (db, _, _):
             assert db.execute(
                 "SELECT count(*) FROM riswan_data.collection_observations"
             ).fetchone() == (1,)
-            assert db.execute("SELECT count(*) FROM riswan_data.collection_runs").fetchone() == (2,)
+            assert db.execute("SELECT count(*) FROM riswan_data.collection_runs").fetchone() == (3,)
             assert "synthetic-registration-only" not in str(
                 db.execute("SELECT connector FROM riswan_data.collection_integrations").fetchall()
             )

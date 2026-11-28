@@ -111,3 +111,32 @@ revoke a credential already issued by a provider, and it cannot undo an
 external SDK action if the database transaction later fails. The broker returns
 only after its lease and audit transaction succeeds. Connector orchestration and
 production audit recovery are tracked in subsequent milestones.
+
+## A.6.4 collection persistence preview slice
+
+| Existing storage | PostgreSQL foundation | Transaction and ownership |
+| --- | --- | --- |
+| Operator-provided hosted AWS registration and connector settings | collection_integrations | Scoped tenant, product and integration registration, with immutable workload, provider instance and connector source configuration. External IDs stay in trusted runtime configuration. |
+| SQLite collection_checkpoints, collection_pending and collection_status | collection_progress | Existing AWS time-window semantics. PostgreSQL locks the progress row and rejects publication when the expected watermark is stale. Opaque provider page tokens remain in the connector iterator. |
+| SQLite collection_receipts | collection_observations | Equal source event IDs from distinct locations retain distinct observations. Repeated pages deduplicate by location and event ID. Conflicting hashes abort publication. The case FK preserves tenant and product scope. |
+| SQLite connector status and reported run summary | collection_runs | A successful run commits with evidence, receipt and watermark writes. Failed runs may record a fixed failure code without moving the watermark, provided no newer run has advanced it. |
+
+Migration 0016 keeps these tables in the scoped product database so the
+existing case compiler, raw data, canonical events, provenance, custody,
+observations and checkpoint can commit together. The separate migration owner
+creates the tables. The restricted product runtime can read and append scoped
+records and update only progress. Every table forces tenant, product and
+integration RLS. The write path requires a matching trusted workload context.
+This is an internal persistence slice and the application has no enabled
+PostgreSQL hosted collection route yet.
+
+The remaining hosted boundary is explicit. The legacy hosted AWS role adapter
+executes collection as part of credential issuance under the control
+transaction, and the legacy sink writes to SQLite. Before enabling the
+PostgreSQL hosted route, split credential authorization and bounded issuance
+from page reads, bind the operator-approved integration to its current
+PostgreSQL workload enrollment and provider registration, and revalidate the
+operation before publication. Schedule network reads outside PostgreSQL
+transactions. Recovery should resume an interrupted window or retry it from
+the previous watermark. External provider calls cannot be rolled back by the
+product database. The preview remains development-only.
