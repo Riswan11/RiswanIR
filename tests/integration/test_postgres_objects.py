@@ -2185,6 +2185,7 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "outage_before",
         "registration_rollback",
         "binding_audit_outage",
+        "control_after_registration",
         "ambiguous",
         "expired",
         "ordered_disable",
@@ -2205,6 +2206,7 @@ def test_authenticated_postgres_collection_handoff(
     record_property,
     outcome,
 ):
+    from dataclasses import replace
     from datetime import UTC, datetime, timedelta
     from threading import Event
     from unittest.mock import Mock
@@ -2419,10 +2421,18 @@ def test_authenticated_postgres_collection_handoff(
             raise psycopg.OperationalError("fixture binding audit unavailable")
         return audit(context, key, action, *args, **kwargs)
 
+    register = collection._repository.register
+
+    def fail_after_registration(registration):
+        register(registration)
+        raise psycopg.OperationalError("fixture control failure after product commit")
+
     with monkeypatch.context() as run_patches:
         try:
             if outcome == "outage_before":
                 run_patches.setattr(postgres_pool, "connection", offline)
+            if outcome == "control_after_registration":
+                run_patches.setattr(collection._repository, "register", fail_after_registration)
             if outcome == "binding_audit_outage":
                 run_patches.setattr(service, "_audit", fail_binding_audit)
             if outcome == "registration_rollback":
@@ -2452,6 +2462,7 @@ def test_authenticated_postgres_collection_handoff(
                         "outage_before",
                         "registration_rollback",
                         "binding_audit_outage",
+                        "control_after_registration",
                         "ambiguous",
                         "expired",
                         "write_failure",
@@ -2554,6 +2565,12 @@ def test_authenticated_postgres_collection_handoff(
                         action="credential.lease.issued", end=issued[0].occurred_at
                     ),
                 ) == ([], None)
+            with bind_context(replace(context, product_id="other")):
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(correlation_id=correlation, before=cursor),
+                ) == ([], None)
         foreign = app.service.authenticate("audit", cookie=bob.split("=", 1)[1])
         with bind_principal(foreign):
             context = service.tenancy.context_for(foreign, UUID(other), "ir", "audit")
@@ -2638,7 +2655,7 @@ def test_authenticated_postgres_collection_handoff(
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
-    if outcome in {"registration_rollback", "binding_audit_outage"}:
+    if outcome in {"registration_rollback", "binding_audit_outage", "control_after_registration"}:
         assert not leases
         client.lookup_events.assert_not_called()
         with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as admin:
@@ -2654,16 +2671,17 @@ def test_authenticated_postgres_collection_handoff(
                 AND event::jsonb->>'action' = 'credential.binding.created'""",
                 (tenant, str(entry.integration_id)),
             ).fetchone() == (0,)
+            product_rows = int(outcome == "control_after_registration")
             assert admin.execute(
                 """SELECT count(*) FROM riswan_data.collection_registration_audit
                 WHERE tenant_id = %s AND integration_id = %s""",
                 scope,
-            ).fetchone() == (0,)
+            ).fetchone() == (product_rows,)
             assert admin.execute(
                 """SELECT count(*) FROM riswan_data.collection_integrations
                 WHERE tenant_id = %s AND integration_id = %s""",
                 scope,
-            ).fetchone() == (0,)
+            ).fetchone() == (product_rows,)
         app = compose()
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
