@@ -2175,6 +2175,7 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "ambiguous",
         "expired",
         "ordered_disable",
+        "write_failure",
     ],
 )
 def test_authenticated_postgres_collection_handoff(
@@ -2350,6 +2351,12 @@ def test_authenticated_postgres_collection_handoff(
         raise PoolClosed("fixture")
 
     publish = collection._repository._publish
+    persist_batch = collection._repository._publish_batch
+
+    def fail_receipts(*args):
+        persist_batch(*args)
+        raise psycopg.OperationalError("fixture failure after receipt insertion")
+
     disable_started = Event()
     executor = ThreadPoolExecutor(max_workers=1)
     disable_futures = []
@@ -2378,6 +2385,8 @@ def test_authenticated_postgres_collection_handoff(
                 run_patches.setattr(postgres_pool, "connection", offline)
             if outcome in {"ambiguous", "ordered_disable"}:
                 run_patches.setattr(collection._repository, "_publish", publish_with_fault)
+            if outcome == "write_failure":
+                run_patches.setattr(collection._repository, "_publish_batch", fail_receipts)
             if outcome == "interrupted":
                 with pytest.raises(SystemExit):
                     request(authorization="Bearer test-workload-token", tenant=tenant)
@@ -2390,7 +2399,15 @@ def test_authenticated_postgres_collection_handoff(
                     if outcome in {"success", "ordered_disable"}
                     else 503
                     if outcome
-                    in {"timeout", "cycle", "outage", "outage_before", "ambiguous", "expired"}
+                    in {
+                        "timeout",
+                        "cycle",
+                        "outage",
+                        "outage_before",
+                        "ambiguous",
+                        "expired",
+                        "write_failure",
+                    }
                     else 404
                 )
                 assert status == expected
@@ -2418,7 +2435,7 @@ def test_authenticated_postgres_collection_handoff(
         app = compose()
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
-    if outcome in {"interrupted", "outage", "timeout"}:
+    if outcome in {"interrupted", "outage", "timeout", "write_failure"}:
         first_start = client.lookup_events.call_args_list[0].kwargs["StartTime"]
         client.lookup_events.side_effect = None
         client.lookup_events.return_value = collected

@@ -22,6 +22,7 @@ from riswan_ir.models.connector import ConnectorConfig
 from riswan_ir.storage.sqlite import Store
 from riswan_platform.authorization.enforcement import AccessDenied
 from riswan_platform.core.context import bind_context
+from riswan_platform.identity.models import ProviderUnavailable as IdentityUnavailable
 from riswan_platform.identity.models import VerifiedPrincipal
 from riswan_platform.secrets import ProviderUnavailable
 from riswan_platform.secrets.providers import (
@@ -213,6 +214,8 @@ class PostgresCollectionAPI(CollectionAPI):
             request,
         )
         broker = RegisteredCredentialBroker(self.service, registry, {integration_id: registration})
+        expected: datetime | None = None
+        window: CollectionRequest | None = None
         try:
             with broker.enrollment(integration_id, "collect"):
                 self._repository.register(entry)
@@ -241,7 +244,25 @@ class PostgresCollectionAPI(CollectionAPI):
             if exc.error.code == "registration_conflict":
                 raise AccessDenied from None
             raise ProviderUnavailable("Collection could not be published.") from None
-        except (Error, PoolClosed, PoolTimeout):
-            raise ProviderUnavailable("Collection storage unavailable.") from None
+        except (Error, PoolClosed, PoolTimeout, IdentityUnavailable, ProviderUnavailable) as exc:
+            if window is not None:
+                try:
+                    with broker.publication(integration_id, "collect"):
+                        self._repository.record_failure(
+                            entry,
+                            window,
+                            expected,
+                            provider_failed=isinstance(exc, ProviderUnavailable),
+                        )
+                except (
+                    AccessDenied,
+                    Error,
+                    PoolClosed,
+                    PoolTimeout,
+                    IdentityUnavailable,
+                    CollectionFailure,
+                ):
+                    raise ProviderUnavailable("Collection unavailable.") from None
+            raise ProviderUnavailable("Collection unavailable.") from None
         finally:
             captured.clear()
