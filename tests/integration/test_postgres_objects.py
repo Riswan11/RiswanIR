@@ -2142,7 +2142,20 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
 
 
 @pytest.mark.parametrize(
-    "outcome", ["success", "timeout", "cycle", "revoked", "suspended", "reenrolled"]
+    "outcome",
+    [
+        "success",
+        "timeout",
+        "cycle",
+        "revoked",
+        "suspended",
+        "reenrolled",
+        "disabled_identity",
+        "disabled_integration",
+        "provider_drift",
+        "interrupted",
+        "outage",
+    ],
 )
 def test_authenticated_postgres_collection_handoff(
     hosted_postgres,
@@ -2158,10 +2171,13 @@ def test_authenticated_postgres_collection_handoff(
     from datetime import timedelta
     from unittest.mock import Mock
 
+    import psycopg
+
     from riswan_app.credential_broker import AWSSTS
     from riswan_app.hosted_collection import CollectionRegistration, PreviewCollection
     from riswan_app.identity_runtime import compose_identity
     from riswan_ir.storage.sqlite import Store
+    from riswan_platform.identity.models import IdentityStatus
     from riswan_platform.secrets import CredentialLease
     from tests.integration.test_identity_runtime import call
 
@@ -2171,6 +2187,7 @@ def test_authenticated_postgres_collection_handoff(
     org_path = f"/v1/organizations/{org['id']}"
     _, _, identity = call(original, "/v1/identity/me", authorization="Bearer test-workload-token")
     workload = identity["identity_id"]
+    worker = original.service.authenticate("fixture", bearer="test-workload-token")
     enrollment = {"identity_id": workload}
     assert send(org_path + "/workloads", "POST", payload=enrollment)[0] == 204
     _, members = send(org_path + "/members")
@@ -2271,17 +2288,57 @@ def test_authenticated_postgres_collection_handoff(
 
             with ThreadPoolExecutor(max_workers=1) as workers:
                 assert workers.submit(change).result(timeout=10)
+        if outcome == "disabled_identity":
+            original.service.set_status(worker.identity, IdentityStatus.DISABLED, "fixture")
+        if outcome in {"disabled_integration", "provider_drift"}:
+            with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+                if outcome == "disabled_integration":
+                    admin.execute(
+                        "UPDATE riswan_data.collection_integrations SET enabled=false WHERE integration_id=%s",
+                        (entry.integration_id,),
+                    )
+                else:
+                    admin.execute(
+                        "UPDATE riswan_control.secret_provider_bindings SET binding='{}' WHERE instance_id=%s",
+                        (entry.instance_id,),
+                    )
+        if outcome == "interrupted":
+            raise SystemExit()
+        if outcome == "outage":
+            from psycopg_pool import PoolClosed
+
+            def offline(*args, **kwargs):
+                raise PoolClosed("fixture")
+
+            run_patches.setattr(postgres_pool, "connection", offline)
         if outcome in {"timeout", "cycle"}:
             return {**collected, "NextToken": "fixture"}
         return collected
 
     monkeypatch.setattr("riswan_ir.connectors.aws.requests.LAST_REGIONAL_CALL", {})
     client.lookup_events.side_effect = page
-    status, _, response = request(authorization="Bearer test-workload-token", tenant=tenant)
-    assert status == (
-        204 if outcome == "success" else 503 if outcome in {"timeout", "cycle"} else 404
-    )
-    assert credential_canary not in json.dumps(response) and credential_canary not in caplog.text
+    with monkeypatch.context() as run_patches:
+        try:
+            if outcome == "interrupted":
+                with pytest.raises(SystemExit):
+                    request(authorization="Bearer test-workload-token", tenant=tenant)
+            else:
+                status, _, response = request(
+                    authorization="Bearer test-workload-token", tenant=tenant
+                )
+                expected = (
+                    204
+                    if outcome == "success"
+                    else 503
+                    if outcome in {"timeout", "cycle", "outage"}
+                    else 404
+                )
+                assert status == expected
+                assert credential_canary not in json.dumps(response)
+        finally:
+            if outcome == "disabled_identity":
+                original.service.set_status(worker.identity, IdentityStatus.ACTIVE, "fixture")
+    assert credential_canary not in caplog.text
     if outcome == "suspended":
         assert send(org_path + "/lifecycle", "POST", payload={"status": "active"})[0] == 200
     reports = send("/v1/investigations", tenant=tenant)[1]
@@ -2292,5 +2349,13 @@ def test_authenticated_postgres_collection_handoff(
         ]
         app = compose()
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    if outcome in {"interrupted", "outage", "timeout"}:
+        first_start = client.lookup_events.call_args_list[0].kwargs["StartTime"]
+        client.lookup_events.side_effect = None
+        client.lookup_events.return_value = collected
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert client.lookup_events.call_args.kwargs["StartTime"] == first_start
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
     assert not list(tmp_path.glob("*.sqlite3"))

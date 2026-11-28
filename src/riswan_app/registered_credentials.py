@@ -1,7 +1,7 @@
 """Resolve temporary credential providers only after workload authorization."""
 
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -44,34 +44,42 @@ class RegisteredCredentialBroker:
         self, integration_id: UUID, purpose: str, *, preflight: Callable[[], None] | None = None
     ) -> CredentialLease:
         with self._service._operation(integration_id, None, "credential.lease") as context:
-            registered, provider = self._authorized(integration_id, purpose, context)
-            if not self._service.repository.initializes_sqlite_schema:
-                self._persist_binding(registered)
-            if preflight is not None:
-                preflight()
-            try:
-                lease = provider.execute(registered.request)
-            except Exception:
-                raise ProviderUnavailable("Credential issuance failed.") from None
-            if lease.expires_at <= self._service.clock():
-                raise AccessDenied
-            if not self._service.repository.initializes_sqlite_schema:
-                with self._service.repository._connection() as db:
-                    db.execute(
-                        "INSERT INTO credential_leases VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (*self._scope(registered), str(lease.id), lease.expires_at),
-                    )
-            self._service._audit(
-                context,
-                integration_id,
-                "credential.lease.issued",
-                "success",
-                "ISSUED",
-                provider_instance_id=registered.instance_id,
-                integration_id=integration_id,
-                target_cloud=registered.request.resource.namespace.cloud,
+            guard = (
+                nullcontext(True)
+                if self._service.repository.initializes_sqlite_schema
+                else self._service.tenancy.workload_guard(require_principal().identity.identity_id)
             )
-            return lease
+            with guard as active:
+                if not active:
+                    raise AccessDenied
+                registered, provider = self._authorized(integration_id, purpose, context)
+                if not self._service.repository.initializes_sqlite_schema:
+                    self._persist_binding(registered)
+                if preflight is not None:
+                    preflight()
+                try:
+                    lease = provider.execute(registered.request)
+                except Exception:
+                    raise ProviderUnavailable("Credential issuance failed.") from None
+                if lease.expires_at <= self._service.clock():
+                    raise AccessDenied
+                if not self._service.repository.initializes_sqlite_schema:
+                    with self._service.repository._connection() as db:
+                        db.execute(
+                            "INSERT INTO credential_leases VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (*self._scope(registered), str(lease.id), lease.expires_at),
+                        )
+                self._service._audit(
+                    context,
+                    integration_id,
+                    "credential.lease.issued",
+                    "success",
+                    "ISSUED",
+                    provider_instance_id=registered.instance_id,
+                    integration_id=integration_id,
+                    target_cloud=registered.request.resource.namespace.cloud,
+                )
+                return lease
 
     def _authorized(
         self, integration_id: UUID, purpose: str, context: PlatformContext
@@ -132,16 +140,18 @@ class RegisteredCredentialBroker:
                 trusted is None
                 or trusted.actor_id != context.actor_id
                 or trusted.actor_type != context.actor_type
-                or not self._service.tenancy.active_workload(principal.identity.identity_id)
             ):
                 raise AccessDenied
-            repository.bind_secret_product(context.product_id)
-            registered, _ = self._authorized(integration_id, purpose, context)
-            if enroll:
-                self._persist_binding(registered)
-            else:
-                self._verify_binding(registered)
-            yield
+            with self._service.tenancy.workload_guard(principal.identity.identity_id) as active:
+                if not active:
+                    raise AccessDenied
+                repository.bind_secret_product(context.product_id)
+                registered, _ = self._authorized(integration_id, purpose, context)
+                if enroll:
+                    self._persist_binding(registered)
+                else:
+                    self._verify_binding(registered)
+                yield
 
     @staticmethod
     def _scope(registered: CredentialRegistration) -> tuple[str, ...]:

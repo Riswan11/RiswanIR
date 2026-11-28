@@ -139,6 +139,9 @@ def compose_identity(
             authorization,
             identities.is_active_human,
             identities.is_active_workload,
+            identities.workload_guard
+            if isinstance(identities, PostgresIdentityRepository)
+            else None,
         )
         fallback = None
         if secrets_region and secrets_kms_key:

@@ -127,19 +127,35 @@ observations and checkpoint can commit together. The separate migration owner
 creates the tables. The restricted product runtime can read and append scoped
 records and update only progress. Every table forces tenant, product and
 integration RLS. The write path requires a matching trusted workload context.
-This is an internal persistence slice and the application has no enabled
-PostgreSQL hosted collection route yet.
+The authenticated development composition can inject operator-owned registrations
+and development-only STS adapters. No HTTP input can choose a role, namespace,
+provider instance or connector settings. CLI cloud configuration remains disabled
+for the PostgreSQL preview.
 
-The remaining hosted boundary is explicit. The legacy hosted AWS role adapter
-executes collection as part of credential issuance under the control
-transaction, and the legacy sink writes to SQLite. Before enabling the
-PostgreSQL hosted route, split credential authorization and bounded issuance
-from page reads, bind the operator-approved integration to its current
-PostgreSQL workload enrollment and provider registration, and revalidate the
-operation before publication. Schedule network reads outside PostgreSQL
-transactions. Recovery should resume an interrupted window or retry it from
-the previous watermark. External provider calls cannot be rolled back by the
-product database. The preview remains development-only.
+The legacy AWS role adapter collects and writes SQLite while the credential
+transaction is open. The PostgreSQL route instead reserves the exact window,
+issues through RegisteredCredentialBroker, and captures the SDK session inside
+the trusted adapter callback. The lease and issuance audit commit before page
+reads start. Neither the control nor product connection remains checked out
+while pages are read. No provider values are persisted. A reservation survives
+failed reads or interruption, and clears with successful publication.
+
+The existing connector handles pagination and repeated tokens. The hosted budget
+allows at most 20 AWS requests, including retries. It checks a 120-second
+monotonic deadline and the lease before and after individual SDK calls.
+An in-flight call is bounded by existing SDK timeouts. The retained buffer
+holds at most 2,000 records and 8 MB. Pages and lease values are kept in memory.
+
+Publication acquires locks in control, identity, then product order. The final
+control check verifies the active tenant, exact enrollment and persisted
+credential/provider binding. The identity advisory lock is shared with workload
+disablement. Inside the product transaction the integration advisory lock is
+shared with enablement changes. Authorization linearizes after these checks and
+the expected-watermark check, while all locks remain held through product commit.
+A revocation committed earlier denies publication. A later change waits until
+publication finishes. Privileged provider and credential binding edits also take
+the control lock before acquiring row locks. External credentials already issued
+remain valid according to provider rules.
 
 The sink verifies stored registration metadata before reading pages. It
 requires successful iterator exhaustion before publishing, with a 2,000-event

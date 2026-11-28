@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from uuid import UUID
 
 from riswan_platform.data_protection import ProtectionDenied
 from riswan_platform.identity.models import ProviderUnavailable
@@ -52,3 +53,15 @@ class PostgresIdentityRepository(IdentityRepository):
     def _begin_write(self, db: IdentityConnection) -> None:
         # Preserve the SQLite writer ordering for identity resolution, revocation and audit.
         db.execute("SELECT pg_catalog.pg_advisory_xact_lock(947061)")
+
+    @contextmanager
+    def workload_guard(self, actor: UUID) -> Iterator[bool]:
+        """Order workload disablement against short authorized control and product writes."""
+        with self._connect() as db:
+            self._begin_write(db)
+            active = db.execute(
+                """SELECT 1 FROM identities WHERE id = ? AND status = 'active'
+                AND kind IN ('service', 'integration')""",
+                (str(actor),),
+            ).fetchone()
+            yield active is not None

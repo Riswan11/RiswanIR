@@ -3,6 +3,7 @@
 import hashlib
 import secrets
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -101,10 +102,14 @@ class Tenancy:
         authorization: AuthorizationRepository,
         active_human: Callable[[UUID], bool],
         active_workload: Callable[[UUID], bool] | None = None,
+        workload_guard: Callable[[UUID], AbstractContextManager[bool]] | None = None,
     ):
         self.authorization = authorization
         self._active_human = active_human
         self.active_workload = active_workload or (lambda _: False)
+        self.workload_guard = workload_guard or (
+            lambda actor: nullcontext(self.active_workload(actor))
+        )
         self.evaluator = Evaluator(authorization, authorization)
         if authorization.initializes_sqlite_schema:
             with authorization.atomic() as db:

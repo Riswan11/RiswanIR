@@ -74,3 +74,16 @@ END;
 $fn$;
 CREATE TRIGGER collection_integration_change BEFORE UPDATE ON riswan_data.collection_integrations
  FOR EACH ROW EXECUTE FUNCTION riswan_data.lock_collection_integration();
+
+-- Privileged binding edits take the control lock before acquiring row locks.
+CREATE FUNCTION riswan_control.lock_collection_binding() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+ PERFORM pg_advisory_xact_lock(947062);
+ RETURN NULL;
+END;
+$fn$;
+CREATE TRIGGER collection_provider_binding_change BEFORE UPDATE OR DELETE ON riswan_control.secret_provider_bindings
+ FOR EACH STATEMENT EXECUTE FUNCTION riswan_control.lock_collection_binding();
+CREATE TRIGGER collection_credential_binding_change BEFORE UPDATE OR DELETE ON riswan_control.credential_bindings
+ FOR EACH STATEMENT EXECUTE FUNCTION riswan_control.lock_collection_binding();
