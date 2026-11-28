@@ -2139,3 +2139,158 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
                 ).fetchone()[0][0]
                 assert plan["Plan"]["Actual Rows"] > 0
                 record_property(name + "_query_plan", json.dumps(plan))
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "timeout", "cycle", "revoked", "suspended", "reenrolled"]
+)
+def test_authenticated_postgres_collection_handoff(
+    hosted_postgres,
+    postgres_pool,
+    postgres_identity_pool,
+    postgres_control_pool,
+    tmp_path,
+    cloudtrail,
+    monkeypatch,
+    caplog,
+    outcome,
+):
+    from datetime import timedelta
+    from unittest.mock import Mock
+
+    from riswan_app.credential_broker import AWSSTS
+    from riswan_app.hosted_collection import CollectionRegistration, PreviewCollection
+    from riswan_app.identity_runtime import compose_identity
+    from riswan_ir.storage.sqlite import Store
+    from riswan_platform.secrets import CredentialLease
+    from tests.integration.test_identity_runtime import call
+
+    original, send, alice, bob, tenant, other = hosted_postgres
+    _, organizations = send("/v1/organizations")
+    org = next(item for item in organizations if item["tenant_id"] == tenant)
+    org_path = f"/v1/organizations/{org['id']}"
+    _, _, identity = call(original, "/v1/identity/me", authorization="Bearer test-workload-token")
+    workload = identity["identity_id"]
+    enrollment = {"identity_id": workload}
+    assert send(org_path + "/workloads", "POST", payload=enrollment)[0] == 204
+    _, members = send(org_path + "/members")
+    joined = next(item["joined_at"] for item in members if item["identity_id"] == workload)
+
+    event = dict(cloudtrail["Records"][0])
+    principal = event["userIdentity"]["arn"]
+    account = principal.split(":")[4]
+    event.update(recipientAccountId=account, awsRegion="us-east-1")
+    credential_canary = "synthetic-temporary-collection-canary"
+    session = Mock()
+    client = Mock()
+    session.client.return_value = client
+
+    class DevelopmentSTS(AWSSTS):
+        development_only = True
+
+        def session(self, config, now):
+            return session, CredentialLease(id=uuid4(), expires_at=now + timedelta(minutes=5))
+
+    entry = CollectionRegistration.model_validate(
+        {
+            "integration_id": uuid4(),
+            "instance_id": uuid4(),
+            "tenant_id": tenant,
+            "workload_id": workload,
+            "membership_joined": joined,
+            "namespace": {
+                "cloud": "aws",
+                "partition": "aws",
+                "account": account,
+                "region": "us-east-1",
+            },
+            "connector": {
+                "kind": "cloudtrail",
+                "principal": principal,
+                "account": {
+                    "account_id": account,
+                    "region": "us-east-1",
+                    "role_arn": f"arn:aws:iam::{account}:role/Fixture",
+                    "external_id": credential_canary,
+                },
+            },
+        }
+    )
+
+    def compose():
+        return compose_identity(
+            tmp_path / "oidc.json",
+            None,
+            tmp_path / "workstation.sqlite3",
+            postgres_control_pool=postgres_control_pool,
+            postgres_case_pool=postgres_pool,
+            postgres_identity_pool=postgres_identity_pool,
+            enable_postgres_preview=True,
+            preview_collections=(PreviewCollection(entry, DevelopmentSTS()),),
+        )
+
+    app = compose()
+    route = f"/v1/integrations/{entry.integration_id}/collect"
+    collection = app._authenticated_routes.collections
+    repository = collection.service.repository
+    collected = {"Events": [{"CloudTrailEvent": json.dumps(event)}]}
+
+    def request(**headers):
+        return call(app, route, "POST", origin="https://app.example", **headers)
+
+    assert request(cookie=alice, tenant=tenant)[0] == 404
+    assert request(cookie=bob, tenant=other)[0] == 404
+    client.lookup_events.assert_not_called()
+    monkeypatch.setattr(Store, "create", Mock(side_effect=AssertionError("legacy sink invoked")))
+
+    def page(**params):
+        assert repository._control.get() is None
+        # The product pool has one connection. Checkout succeeds only if no product transaction is held.
+        with postgres_pool.connection(timeout=1):
+            pass
+        if params.get("NextToken"):
+            if outcome == "timeout":
+                raise TimeoutError(credential_canary)
+            assert outcome == "cycle"
+            return {**collected, "NextToken": "fixture"}
+        if outcome in {"revoked", "suspended", "reenrolled"}:
+
+            def change():
+                if outcome == "suspended":
+                    return (
+                        send(org_path + "/lifecycle", "POST", payload={"status": "suspended"})[0]
+                        == 200
+                    )
+                revoked = send(org_path + f"/members/{workload}", "DELETE")[0] == 204
+                if outcome == "reenrolled":
+                    return (
+                        revoked
+                        and send(org_path + "/workloads", "POST", payload=enrollment)[0] == 204
+                    )
+                return revoked
+
+            with ThreadPoolExecutor(max_workers=1) as workers:
+                assert workers.submit(change).result(timeout=10)
+        if outcome in {"timeout", "cycle"}:
+            return {**collected, "NextToken": "fixture"}
+        return collected
+
+    monkeypatch.setattr("riswan_ir.connectors.aws.requests.LAST_REGIONAL_CALL", {})
+    client.lookup_events.side_effect = page
+    status, _, response = request(authorization="Bearer test-workload-token", tenant=tenant)
+    assert status == (
+        204 if outcome == "success" else 503 if outcome in {"timeout", "cycle"} else 404
+    )
+    assert credential_canary not in json.dumps(response) and credential_canary not in caplog.text
+    if outcome == "suspended":
+        assert send(org_path + "/lifecycle", "POST", payload={"status": "active"})[0] == 200
+    reports = send("/v1/investigations", tenant=tenant)[1]
+    assert len(reports) == (1 if outcome == "success" else 0)
+    if outcome == "success":
+        assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
+            "valid"
+        ]
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    assert not list(tmp_path.glob("*.sqlite3"))

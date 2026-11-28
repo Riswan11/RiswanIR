@@ -31,6 +31,8 @@ class RegisteredIntegration:
 
 
 class AWSSTS:
+    development_only = False
+
     def session(self, config: ConnectorConfig, now: datetime) -> tuple[Any, CredentialLease]:
         try:
             account = config.account

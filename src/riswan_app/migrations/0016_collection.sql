@@ -2,7 +2,7 @@ CREATE TABLE riswan_data.collection_integrations (
  tenant_id uuid NOT NULL, product_id text NOT NULL, integration_id uuid NOT NULL,
  workload_id uuid NOT NULL, provider_instance_id uuid NOT NULL, source_scope text NOT NULL,
  connector text NOT NULL, membership_joined timestamptz NOT NULL, namespace text NOT NULL,
- created_at timestamptz NOT NULL DEFAULT now(),
+ created_at timestamptz NOT NULL DEFAULT now(), enabled boolean NOT NULL DEFAULT true,
  PRIMARY KEY (tenant_id, product_id, integration_id),
  UNIQUE (tenant_id, product_id, integration_id, source_scope)
 );
@@ -10,6 +10,9 @@ CREATE TABLE riswan_data.collection_progress (
  tenant_id uuid NOT NULL, product_id text NOT NULL, integration_id uuid NOT NULL,
  source_scope text NOT NULL, watermark timestamptz, healthy boolean, attempted_at timestamptz,
  failure_code text CHECK (failure_code IN ('provider_failure', 'storage_failure')),
+ pending_start timestamptz, pending_end timestamptz,
+ CHECK ((pending_start IS NULL AND pending_end IS NULL) OR
+        (pending_start IS NOT NULL AND pending_end IS NOT NULL AND pending_end > pending_start)),
  PRIMARY KEY (tenant_id, product_id, integration_id, source_scope),
  FOREIGN KEY (tenant_id, product_id, integration_id, source_scope)
  REFERENCES riswan_data.collection_integrations (tenant_id, product_id, integration_id, source_scope)
@@ -59,4 +62,15 @@ BEGIN
  END LOOP;
 END;
 $ddl$;
-GRANT UPDATE (watermark, healthy, attempted_at, failure_code) ON riswan_data.collection_progress TO riswan_runtime;
+GRANT UPDATE (watermark, healthy, attempted_at, failure_code, pending_start, pending_end) ON riswan_data.collection_progress TO riswan_runtime;
+
+-- Administrative enable/disable changes serialize with product publication.
+CREATE FUNCTION riswan_data.lock_collection_integration() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+ PERFORM pg_advisory_xact_lock(hashtextextended(OLD.integration_id::text, 796016));
+ RETURN NEW;
+END;
+$fn$;
+CREATE TRIGGER collection_integration_change BEFORE UPDATE ON riswan_data.collection_integrations
+ FOR EACH ROW EXECUTE FUNCTION riswan_data.lock_collection_integration();
