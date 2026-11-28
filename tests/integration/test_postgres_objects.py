@@ -2504,6 +2504,62 @@ def test_authenticated_postgres_collection_handoff(
                 ("credential.lease.issued", workload),
             ]
             assert all(credential_canary not in row[2] for row in related)
+        from riswan_app.postgres_audit import CredentialAuditQuery, credential_timeline
+        from riswan_platform.authorization.enforcement import AccessDenied
+        from riswan_platform.identity.principal import bind_principal
+
+        owner = app.service.authenticate("audit", cookie=alice.split("=", 1)[1])
+        with bind_principal(owner):
+            context = service.tenancy.context_for(owner, UUID(tenant), "ir", "audit")
+            assert context is not None
+            with bind_context(context):
+                history, cursor = credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        workload_id=UUID(workload), correlation_id=correlation, limit=1
+                    ),
+                )
+                assert len(history) == 1 and cursor == history[0].id
+                earlier, _ = credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        workload_id=UUID(workload), correlation_id=correlation, before=cursor
+                    ),
+                )
+                assert earlier and all(event.correlation_id == correlation for event in earlier)
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(workload_id=uuid4(), before=cursor),
+                ) == ([], None)
+                issued, _ = credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(
+                        action="credential.lease.issued", outcome="success", request_id=request_id
+                    ),
+                )
+                assert len(issued) == 1 and issued[0].actor_id == workload
+        foreign = app.service.authenticate("audit", cookie=bob.split("=", 1)[1])
+        with bind_principal(foreign):
+            context = service.tenancy.context_for(foreign, UUID(other), "ir", "audit")
+            assert context is not None
+            with bind_context(context):
+                assert credential_timeline(
+                    service,
+                    entry.integration_id,
+                    CredentialAuditQuery(correlation_id=correlation, before=cursor),
+                ) == ([], None)
+        with (
+            bind_principal(worker),
+            bind_context(
+                PlatformContext(UUID(tenant), workload, "service", "ir", "audit", "audit")
+            ),
+            pytest.raises(AccessDenied),
+        ):
+            credential_timeline(service, entry.integration_id, CredentialAuditQuery())
         assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
             "valid"
         ]

@@ -6,8 +6,11 @@ from datetime import UTC, datetime
 from urllib.parse import parse_qsl
 from uuid import UUID
 
+from riswan_platform.authorization import Permission
 from riswan_platform.authorization.enforcement import AccessDenied
+from riswan_platform.secrets import SecretAccessEvent
 
+from .secrets import Secrets
 from .tenancy import Tenancy
 
 
@@ -82,8 +85,6 @@ def tenant_timeline(
     request_id: str,
     query: TenantAuditQuery,
 ):
-    from riswan_platform.authorization import Permission
-
     repo = tenancy.authorization
     if repo.initializes_sqlite_schema:
         raise AccessDenied
@@ -136,3 +137,70 @@ def tenant_timeline(
         "events": [dict(zip(fields, row, strict=True)) for row in rows[: query.limit]],
         "next_before": rows[query.limit - 1][0] if len(rows) > query.limit else None,
     }
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialAuditQuery:
+    workload_id: UUID | None = None
+    action: str | None = None
+    outcome: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    before: UUID | None = None
+    limit: int = 25
+
+
+def credential_timeline(
+    service: Secrets, integration_id: UUID, query: CredentialAuditQuery
+) -> tuple[list[SecretAccessEvent], UUID | None]:
+    """Read integration credential evidence under current product and secret-audit authority."""
+    if service.repository.initializes_sqlite_schema:
+        raise AccessDenied
+    if not 1 <= query.limit <= 100:
+        raise ValueError("Invalid audit limit.")
+    with service._operation(
+        integration_id, Permission.SECRET_AUDIT, "credential.audit.read"
+    ) as context:
+        filters = (
+            str(query.workload_id) if query.workload_id else None,
+            query.action,
+            query.outcome,
+            query.request_id,
+            query.correlation_id,
+        )
+        before = str(query.before) if query.before else None
+        with service.repository._connection() as db:
+            rows = db.execute(
+                """WITH scoped AS (
+                    SELECT sequence, event::jsonb AS data FROM secret_access_events
+                    WHERE tenant_id = ? AND product = ? AND secret_id = ?
+                    AND (
+                        event::jsonb->>'integration_id' = ?
+                        OR (event::jsonb->>'integration_id' IS NULL
+                            AND event::jsonb->>'action' IN ('credential.lease', 'credential.lease.denied'))
+                    )
+                    AND left(event::jsonb->>'action', 11) = 'credential.'
+                    AND (?::text IS NULL OR event::jsonb->>'actor_id' = ?)
+                    AND (?::text IS NULL OR event::jsonb->>'action' = ?)
+                    AND (?::text IS NULL OR event::jsonb->>'outcome' = ?)
+                    AND (?::text IS NULL OR event::jsonb->>'request_id' = ?)
+                    AND (?::text IS NULL OR event::jsonb->>'correlation_id' = ?)
+                )
+                SELECT data FROM scoped
+                WHERE (?::text IS NULL OR sequence < (
+                    SELECT sequence FROM scoped WHERE data->>'id' = ?
+                ))
+                ORDER BY sequence DESC LIMIT ?""",
+                (
+                    str(context.tenant_id),
+                    context.product_id,
+                    str(integration_id),
+                    str(integration_id),
+                    *(value for item in filters for value in (item, item)),
+                    before,
+                    before,
+                    query.limit + 1,
+                ),
+            ).fetchall()
+        events = [SecretAccessEvent.model_validate(row[0]) for row in rows[: query.limit]]
+        return events, events[-1].id if len(rows) > query.limit else None
