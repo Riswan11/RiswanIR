@@ -140,3 +140,15 @@ operation before publication. Schedule network reads outside PostgreSQL
 transactions. Recovery should resume an interrupted window or retry it from
 the previous watermark. External provider calls cannot be rolled back by the
 product database. The preview remains development-only.
+
+The sink verifies stored registration metadata before reading pages. It
+requires successful iterator exhaustion before publishing, with a 2,000-event
+and 8 MB retained-record cap. A partial read records a sanitized failure
+without committing observations or moving the watermark. Composite RLS
+policies inherit the parent registration's workload scope. These checks
+protect the internal persistence path once a trusted caller has established
+context. They do not perform live enrollment or provider authorization.
+
+The disposable plan fixture adds 256 observation and run rows. The CI JUnit
+artifact records scoped registration, receipt, progress and run-history plans.
+The test asserts returned rows without forcing PostgreSQL to select an index.

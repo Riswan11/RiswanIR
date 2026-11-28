@@ -1969,7 +1969,7 @@ def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkey
 
 
 def test_postgres_collection_checkpoint_and_evidence_commit_together(
-    hosted_postgres, postgres_pool, cloudtrail, monkeypatch
+    hosted_postgres, postgres_pool, cloudtrail, monkeypatch, record_property
 ):
     from dataclasses import replace
     from datetime import UTC, datetime, timedelta
@@ -2075,3 +2075,67 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
     assert status == 200 and len(reports) == 1
     report = reports[0]["id"]
     assert send(f"/v1/investigations/{report}/evidence/verify", tenant=tenant)[1]["valid"]
+
+    def concurrent():
+        with bind_context(context):
+            try:
+                return collection.collect_and_publish(
+                    entry,
+                    CollectionRequest(start=now, end=second.end + timedelta(minutes=1)),
+                    second.end,
+                    connector,
+                )[1]
+            except CollectionFailure as exc:
+                return exc.error.code
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _: concurrent(), range(2)))
+    assert 0 in results and "stale_checkpoint" in results
+
+    with bind_context(context), collection._transaction(entry) as (db, _, scope):
+        with db.transaction(force_rollback=True):
+            db.execute(
+                """INSERT INTO riswan_data.collection_observations
+                SELECT %s,%s,%s,%s,'fixture-' || i,'fixture/location','fixture',%s
+                FROM generate_series(1,256) g(i)""",
+                (*scope, report),
+            )
+            db.execute(
+                """INSERT INTO riswan_data.collection_runs
+                (tenant_id,product_id,integration_id,source_scope,run_id,actor_id,start_at,end_at,received,persisted)
+                SELECT %s,%s,%s,%s,gen_random_uuid(),%s,%s,%s,0,0
+                FROM generate_series(1,256)""",
+                (*scope, workload, first.start, first.end),
+            )
+            for name, query, params in (
+                (
+                    "collection_registration",
+                    """SELECT connector FROM riswan_data.collection_integrations
+                    WHERE (tenant_id,product_id,integration_id,source_scope)=(%s,%s,%s,%s)""",
+                    scope,
+                ),
+                (
+                    "collection_receipt",
+                    """SELECT digest FROM riswan_data.collection_observations
+                    WHERE (tenant_id,product_id,integration_id,source_scope,event_id)=(%s,%s,%s,%s,%s)""",
+                    (*scope, "fixture-128"),
+                ),
+                (
+                    "collection_progress",
+                    """SELECT watermark,healthy FROM riswan_data.collection_progress
+                    WHERE (tenant_id,product_id,integration_id,source_scope)=(%s,%s,%s,%s)""",
+                    scope,
+                ),
+                (
+                    "collection_history",
+                    """SELECT run_id FROM riswan_data.collection_runs
+                    WHERE (tenant_id,product_id,integration_id,source_scope)=(%s,%s,%s,%s)
+                    ORDER BY completed_at DESC LIMIT 100""",
+                    scope,
+                ),
+            ):
+                plan = db.execute(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, params
+                ).fetchone()[0][0]
+                assert plan["Plan"]["Actual Rows"] > 0
+                record_property(name + "_query_plan", json.dumps(plan))
