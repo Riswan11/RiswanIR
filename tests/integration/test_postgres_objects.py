@@ -2026,6 +2026,9 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         raise TimeoutError("synthetic provider detail")
 
     with bind_context(context):
+        with pytest.raises(CollectionFailure, match="registration_conflict"):
+            collection.confirm_registration(entry)
+    with bind_context(context):
         assert collection.register(entry) is None
         advance = collection._advance
 
@@ -2061,6 +2064,19 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
             collection.collect_and_publish(entry, second, None, connector)
         assert collection.collect_and_publish(entry, second, now, connector)[1] == 0
         assert not collection.record_failure(entry, second, now, provider_failed=False)
+        future = CollectionRequest(start=second.end, end=second.end + timedelta(minutes=1))
+        with pytest.raises(CollectionFailure, match="invalid_checkpoint_window"):
+            collection.collect_and_publish(
+                entry,
+                future.model_copy(update={"incremental": False}),
+                second.end,
+                connector,
+            )
+        conflicting = Mock()
+        altered = {**source, "userAgent": "different content"}
+        conflicting.collect.return_value = iter([CollectedBatch(batch.location, [altered])])
+        with pytest.raises(CollectionFailure, match="conflicting_event"):
+            collection.collect_and_publish(entry, future, second.end, conflicting)
         newest = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
         assert newest.register(entry) == second.end
         with newest._transaction(entry) as (db, _, _):
@@ -2155,6 +2171,10 @@ def test_postgres_collection_checkpoint_and_evidence_commit_together(
         "provider_drift",
         "interrupted",
         "outage",
+        "outage_before",
+        "ambiguous",
+        "expired",
+        "ordered_disable",
     ],
 )
 def test_authenticated_postgres_collection_handoff(
@@ -2168,7 +2188,8 @@ def test_authenticated_postgres_collection_handoff(
     caplog,
     outcome,
 ):
-    from datetime import timedelta
+    from datetime import UTC, datetime, timedelta
+    from threading import Event
     from unittest.mock import Mock
 
     import psycopg
@@ -2199,6 +2220,7 @@ def test_authenticated_postgres_collection_handoff(
     event.update(recipientAccountId=account, awsRegion="us-east-1")
     credential_canary = "synthetic-temporary-collection-canary"
     session = Mock()
+    leases = []
     client = Mock()
     session.client.return_value = client
 
@@ -2206,7 +2228,9 @@ def test_authenticated_postgres_collection_handoff(
         development_only = True
 
         def session(self, config, now):
-            return session, CredentialLease(id=uuid4(), expires_at=now + timedelta(minutes=5))
+            lease = CredentialLease(id=uuid4(), expires_at=now + timedelta(minutes=5))
+            leases.append(lease)
+            return session, lease
 
     entry = CollectionRegistration.model_validate(
         {
@@ -2288,6 +2312,8 @@ def test_authenticated_postgres_collection_handoff(
 
             with ThreadPoolExecutor(max_workers=1) as workers:
                 assert workers.submit(change).result(timeout=10)
+        if outcome == "expired":
+            object.__setattr__(leases[-1], "expires_at", datetime.now(UTC) - timedelta(seconds=1))
         if outcome == "disabled_identity":
             original.service.set_status(worker.identity, IdentityStatus.DISABLED, "fixture")
         if outcome in {"disabled_integration", "provider_drift"}:
@@ -2317,8 +2343,41 @@ def test_authenticated_postgres_collection_handoff(
 
     monkeypatch.setattr("riswan_ir.connectors.aws.requests.LAST_REGIONAL_CALL", {})
     client.lookup_events.side_effect = page
+
+    def offline(*args, **kwargs):
+        from psycopg_pool import PoolClosed
+
+        raise PoolClosed("fixture")
+
+    publish = collection._repository._publish
+    disable_started = Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    disable_futures = []
+
+    def disable():
+        disable_started.set()
+        original.service.set_status(worker.identity, IdentityStatus.DISABLED, "fixture")
+
+    def publish_with_fault(*args):
+        if outcome == "ordered_disable":
+            disable_futures.append(executor.submit(disable))
+            assert disable_started.wait(timeout=5)
+            with psycopg.connect("host=127.0.0.1 port=5432 dbname=riswan user=postgres") as admin:
+                assert admin.execute("SELECT pg_try_advisory_xact_lock(947061)").fetchone() == (
+                    False,
+                )
+            assert not disable_futures[-1].done()
+        result = publish(*args)
+        if outcome == "ambiguous":
+            raise psycopg.OperationalError("fixture reply lost after commit")
+        return result
+
     with monkeypatch.context() as run_patches:
         try:
+            if outcome == "outage_before":
+                run_patches.setattr(postgres_pool, "connection", offline)
+            if outcome in {"ambiguous", "ordered_disable"}:
+                run_patches.setattr(collection._repository, "_publish", publish_with_fault)
             if outcome == "interrupted":
                 with pytest.raises(SystemExit):
                     request(authorization="Bearer test-workload-token", tenant=tenant)
@@ -2328,25 +2387,34 @@ def test_authenticated_postgres_collection_handoff(
                 )
                 expected = (
                     204
-                    if outcome == "success"
+                    if outcome in {"success", "ordered_disable"}
                     else 503
-                    if outcome in {"timeout", "cycle", "outage"}
+                    if outcome
+                    in {"timeout", "cycle", "outage", "outage_before", "ambiguous", "expired"}
                     else 404
                 )
                 assert status == expected
                 assert credential_canary not in json.dumps(response)
         finally:
-            if outcome == "disabled_identity":
+            executor.shutdown(wait=True)
+            if outcome in {"disabled_identity", "ordered_disable"}:
                 original.service.set_status(worker.identity, IdentityStatus.ACTIVE, "fixture")
     assert credential_canary not in caplog.text
     if outcome == "suspended":
         assert send(org_path + "/lifecycle", "POST", payload={"status": "active"})[0] == 200
     reports = send("/v1/investigations", tenant=tenant)[1]
-    assert len(reports) == (1 if outcome == "success" else 0)
+    assert len(reports) == (1 if outcome in {"success", "ambiguous", "ordered_disable"} else 0)
+    if outcome == "outage_before":
+        assert not leases
+        client.lookup_events.assert_not_called()
     if outcome == "success":
         assert send(f"/v1/investigations/{reports[0]['id']}/evidence/verify", tenant=tenant)[1][
             "valid"
         ]
+        app = compose()
+        assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
+        assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
+    if outcome == "ambiguous":
         app = compose()
         assert request(authorization="Bearer test-workload-token", tenant=tenant)[0] == 204
         assert len(send("/v1/investigations", tenant=tenant)[1]) == 1
