@@ -37,7 +37,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 16)]
+        ).fetchall() == [(version,) for version in range(1, 17)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -1966,3 +1966,87 @@ def test_postgres_preview_rejects_live_adapter_before_config_io(tmp_path, monkey
             preview_secret_routing=routing,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_postgres_collection_checkpoint_and_evidence_commit_together(
+    hosted_postgres, postgres_pool, cloudtrail, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    from riswan_app.hosted_collection import CollectionRegistration
+    from riswan_app.postgres_collections import PostgresCollections
+    from riswan_ir.connectors.base import CollectedBatch, CollectionFailure
+    from riswan_ir.models.collection import CollectionRequest
+
+    app, send, _, _, tenant, _ = hosted_postgres
+    collection = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
+    source = cloudtrail["Records"][0]
+    principal = source["userIdentity"]["arn"]
+    account = principal.split(":")[4]
+    workload = uuid4()
+    now = datetime.now(UTC)
+    entry = CollectionRegistration.model_validate(
+        {
+            "integration_id": uuid4(),
+            "instance_id": uuid4(),
+            "tenant_id": tenant,
+            "workload_id": workload,
+            "membership_joined": now,
+            "namespace": {
+                "cloud": "aws",
+                "partition": "aws",
+                "account": account,
+                "region": "us-east-1",
+            },
+            "connector": {
+                "kind": "cloudtrail",
+                "principal": principal,
+                "account": {
+                    "account_id": account,
+                    "region": "us-east-1",
+                    "role_arn": f"arn:aws:iam::{account}:role/Synthetic",
+                    "external_id": "synthetic-registration-only",
+                },
+            },
+        }
+    )
+    first = CollectionRequest(start=now - timedelta(minutes=15), end=now)
+    second = CollectionRequest(start=first.start, end=now + timedelta(minutes=1))
+    context = PlatformContext(
+        UUID(tenant), str(workload), "service", "ir", "request", "correlation"
+    )
+    batch = CollectedBatch("fixture/location", [source, source])
+    with bind_context(context):
+        assert collection.register(entry) is None
+        advance = collection._advance
+
+        def fail_after_checkpoint(*args):
+            advance(*args)
+            raise RuntimeError("injected checkpoint failure")
+
+        with monkeypatch.context() as patches:
+            patches.setattr(collection, "_advance", fail_after_checkpoint)
+            with pytest.raises(RuntimeError, match="injected checkpoint failure"):
+                collection.publish(entry, first, None, [batch])
+        assert collection.register(entry) is None
+    assert send("/v1/investigations", tenant=tenant) == (200, [])
+
+    with bind_context(context):
+        assert collection.publish(entry, first, None, [batch])[1] == 1
+        with pytest.raises(CollectionFailure, match="stale_checkpoint"):
+            collection.publish(entry, second, None, [batch])
+        assert collection.publish(entry, second, now, [batch])[1] == 0
+        newest = PostgresCollections(app._authenticated_routes.product.store, postgres_pool)
+        assert newest.register(entry) == second.end
+        with newest._transaction(entry) as (db, _, _):
+            assert db.execute(
+                "SELECT count(*) FROM riswan_data.collection_observations"
+            ).fetchone() == (1,)
+            assert db.execute("SELECT count(*) FROM riswan_data.collection_runs").fetchone() == (2,)
+            assert "synthetic-registration-only" not in str(
+                db.execute("SELECT connector FROM riswan_data.collection_integrations").fetchall()
+            )
+    status, reports = send("/v1/investigations", tenant=tenant)
+    assert status == 200 and len(reports) == 1
+    report = reports[0]["id"]
+    assert send(f"/v1/investigations/{report}/evidence/verify", tenant=tenant)[1]["valid"]
