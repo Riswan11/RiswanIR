@@ -192,6 +192,11 @@ class PostgresCollectionAPI(CollectionAPI):
             AWSRoleOperation(request, entry.connector, item.provider, lambda _: None)
             self._entries[entry.integration_id] = (item, binding, request)
 
+    def route(self, env, principal: VerifiedPrincipal, request_id: str):
+        if env.get("CONTENT_LENGTH") not in (None, "", "0") or env.get("QUERY_STRING"):
+            raise AccessDenied
+        return super().route(env, principal, request_id)
+
     def _execute(self, integration_id: UUID) -> None:
         from psycopg import Error
         from psycopg_pool import PoolClosed, PoolTimeout

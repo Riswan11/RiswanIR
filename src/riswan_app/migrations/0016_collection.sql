@@ -87,3 +87,14 @@ CREATE TRIGGER collection_provider_binding_change BEFORE UPDATE OR DELETE ON ris
  FOR EACH STATEMENT EXECUTE FUNCTION riswan_control.lock_collection_binding();
 CREATE TRIGGER collection_credential_binding_change BEFORE UPDATE OR DELETE ON riswan_control.credential_bindings
  FOR EACH STATEMENT EXECUTE FUNCTION riswan_control.lock_collection_binding();
+
+-- Direct identity status writes honor the same lock as application mutations.
+CREATE FUNCTION riswan_auth.lock_collection_identity_status() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+ PERFORM pg_advisory_xact_lock(947061);
+ RETURN NULL;
+END;
+$fn$;
+CREATE TRIGGER collection_identity_status_change BEFORE UPDATE OF status ON riswan_auth.identities
+ FOR EACH STATEMENT EXECUTE FUNCTION riswan_auth.lock_collection_identity_status();

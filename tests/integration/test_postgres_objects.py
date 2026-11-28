@@ -2282,6 +2282,14 @@ def test_authenticated_postgres_collection_handoff(
 
     assert request(cookie=alice, tenant=tenant)[0] == 404
     assert request(cookie=bob, tenant=other)[0] == 404
+    assert (
+        request(
+            authorization="Bearer test-workload-token",
+            tenant=tenant,
+            payload={"account_id": "000000000000"},
+        )[0]
+        == 404
+    )
     client.lookup_events.assert_not_called()
     monkeypatch.setattr(Store, "create", Mock(side_effect=AssertionError("legacy sink invoked")))
 
@@ -2327,7 +2335,7 @@ def test_authenticated_postgres_collection_handoff(
                 else:
                     admin.execute(
                         "UPDATE riswan_control.secret_provider_bindings SET binding='{}' WHERE instance_id=%s",
-                        (entry.instance_id,),
+                        (str(entry.instance_id),),
                     )
         if outcome == "interrupted":
             raise SystemExit()
