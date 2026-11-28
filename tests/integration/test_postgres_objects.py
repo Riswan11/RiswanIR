@@ -37,7 +37,7 @@ def postgres_pool():
         migrate(owner)
         assert owner.execute(
             "SELECT version FROM riswan_data.schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 18)]
+        ).fetchall() == [(version,) for version in range(1, 19)]
     with pool_module.ConnectionPool(
         connection + " user=riswan_runtime",
         min_size=1,
@@ -2485,7 +2485,7 @@ def test_authenticated_postgres_collection_handoff(
 
 
 def test_postgres_tenant_audit_requires_current_scoped_permission(
-    hosted_postgres, postgres_control_pool, record_property
+    hosted_postgres, postgres_control_pool, record_property, monkeypatch
 ):
     import psycopg
 
@@ -2528,6 +2528,22 @@ def test_postgres_tenant_audit_requires_current_scoped_permission(
     )
     assert send(route, cookie=bob)[0] == 404
     assert invitation["token"] not in json.dumps(send(route)[1])
+
+    from riswan_app.postgres_control import PostgresAuthorizationRepository
+    from riswan_platform.authorization import Permission
+
+    original = PostgresAuthorizationRepository.record
+
+    def unavailable(repo, event_type, decision):
+        if decision.action == Permission.AUDIT_READ:
+            raise psycopg.OperationalError("fixture audit sink unavailable")
+        return original(repo, event_type, decision)
+
+    with monkeypatch.context() as failure:
+        failure.setattr(PostgresAuthorizationRepository, "record", unavailable)
+        status, error = send(route)
+        assert status == 404
+        assert "events" not in error
     with postgres_control_pool.connection() as db, db.transaction():
         assert db.execute(
             "SELECT count(*) FROM riswan_control.organization_audit_events"
@@ -2563,3 +2579,48 @@ def test_postgres_tenant_audit_requires_current_scoped_permission(
             ).fetchone()[0][0]
             assert plan["Plan"]["Actual Rows"] == 25
             record_property("tenant_audit_query_plan", json.dumps(plan))
+
+
+def test_protected_object_audit_is_atomic_and_metadata_only(postgres_pool):
+    import psycopg
+
+    tenant, obj = uuid4(), uuid4()
+    context = PlatformContext(tenant, str(uuid4()), "service", "ir", "request", "correlation")
+    key = f"{tenant.hex}/{sha256(b'ir').hexdigest()}/{obj.hex}"
+    objects = PostgresObjects(postgres_pool)
+    with bind_context(context):
+        objects.put(key, b"never include this envelope")
+        with postgres_pool.connection() as db:
+            db.execute(
+                "SELECT set_config('riswan.tenant_id', %s, true), set_config('riswan.product_id', 'ir', true)",
+                (str(tenant),),
+            )
+            with (
+                pytest.raises((psycopg.IntegrityError, psycopg.errors.InsufficientPrivilege)),
+                db.transaction(),
+            ):
+                db.execute("DELETE FROM riswan_data.protected_objects WHERE object_id = %s", (obj,))
+            for operation in (
+                "SELECT * FROM riswan_data.protected_object_audit",
+                "UPDATE riswan_data.protected_object_audit SET actor_id = 'forged'",
+                "DELETE FROM riswan_data.protected_object_audit",
+            ):
+                with pytest.raises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                    db.execute(operation)
+        assert objects.get(key) == b"never include this envelope"
+        objects.delete(key)
+
+    with psycopg.connect("host=127.0.0.1 dbname=riswan user=postgres") as db:
+        rows = db.execute(
+            """SELECT operation, actor_id, actor_type, request_id, correlation_id,
+                      to_jsonb(a)::text
+                 FROM riswan_data.protected_object_audit a
+                WHERE tenant_id = %s AND product_id = 'ir' AND object_id = %s
+                ORDER BY occurred_at""",
+            (tenant, obj),
+        ).fetchall()
+    assert [row[:5] for row in rows] == [
+        (operation, context.actor_id, "service", "request", "correlation")
+        for operation in ("INSERT", "DELETE")
+    ]
+    assert all("never include" not in row[5] for row in rows)
